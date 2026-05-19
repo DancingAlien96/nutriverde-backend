@@ -1,0 +1,52 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: nutriverde-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-nutriverde_dev}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nutriverde}
+      MYSQL_USER: ${MYSQL_USER:-nutriverde}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-nutriverde_dev}
+      TZ: ${BUSINESS_TIMEZONE:-America/Guatemala}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - nutriverde_mysql_data:/var/lib/mysql
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=-06:00
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-uroot",
+          "-p${MYSQL_ROOT_PASSWORD:-nutriverde_dev}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  adminer:
+    image: adminer:4
+    container_name: nutriverde-adminer
+    restart: unless-stopped
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+      ADMINER_DESIGN: nette
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  nutriverde_mysql_data:
+    name: nutriverde_mysql_data

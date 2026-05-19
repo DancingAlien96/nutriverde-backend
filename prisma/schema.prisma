@@ -1,0 +1,262 @@
+// NutriVerde — Prisma schema
+// Modelo de dominio para sistema de consultas nutricionales online
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Usuarios administradores (la nutricionista y posible staff)
+// ============================================================
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  role         AdminRole @default(NUTRITIONIST)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  approvedPayments Payment[] @relation("PaymentApprover")
+
+  @@map("admin_users")
+}
+
+enum AdminRole {
+  NUTRITIONIST
+  STAFF
+}
+
+// ============================================================
+// Pacientes (referidos por link privado)
+// ============================================================
+model Patient {
+  id              String   @id @default(cuid())
+  fullName        String
+  email           String   @unique
+  phone           String?
+  whatsappNotify  Boolean  @default(false)
+  timezone        String   @default("America/Guatemala")
+  referralSource  String?  // quién lo refirió (texto libre opcional)
+  notes           String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  intakeForms     IntakeForm[]
+  payments        Payment[]
+  appointments    Appointment[]
+  nutritionPlans  NutritionPlan[]
+
+  @@index([email])
+  @@map("patients")
+}
+
+// ============================================================
+// Servicios ofrecidos (Consulta Inicial, Seguimiento, Premium)
+// ============================================================
+model Service {
+  id          String   @id @default(cuid())
+  slug        String   @unique  // "consulta-inicial", "seguimiento", "premium"
+  name        String
+  description String   @db.Text
+  priceCents  Int                  // precio en centavos (Q350.00 -> 35000)
+  currency    String   @default("GTQ")
+  durationMin Int                  // duración en minutos (0 si es mensual)
+  billingType BillingType @default(ONE_TIME)
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  appointments Appointment[]
+  payments     Payment[]
+
+  @@map("services")
+}
+
+enum BillingType {
+  ONE_TIME
+  MONTHLY
+}
+
+// ============================================================
+// Formulario inicial del paciente (datos básicos + objetivos)
+// ============================================================
+model IntakeForm {
+  id          String   @id @default(cuid())
+  patientId   String
+  serviceSlug String                // qué servicio quiere
+  // Datos estructurados libres (objetivos, condiciones, historial)
+  data        Json
+  submittedAt DateTime @default(now())
+
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("intake_forms")
+}
+
+// ============================================================
+// Pagos (comprobante manual, aprobación por la nutricionista)
+// ============================================================
+model Payment {
+  id            String        @id @default(cuid())
+  patientId     String
+  serviceId     String
+  appointmentId String?       @unique  // se vincula tras crear la cita
+  amountCents   Int
+  currency      String        @default("GTQ")
+  receiptUrl    String        // ruta al comprobante subido
+  receiptMime   String?
+  status        PaymentStatus @default(PENDING_REVIEW)
+  approvedById  String?
+  approvedAt    DateTime?
+  rejectedReason String?      @db.Text
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  patient     Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  service     Service      @relation(fields: [serviceId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+  approvedBy  AdminUser?   @relation("PaymentApprover", fields: [approvedById], references: [id])
+
+  @@index([patientId])
+  @@index([status])
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+// ============================================================
+// Citas (consultas online por Google Meet/Zoom)
+// ============================================================
+model Appointment {
+  id             String            @id @default(cuid())
+  patientId      String
+  serviceId      String
+  scheduledAt    DateTime?         // null hasta que el paciente seleccione horario
+  durationMin    Int
+  timezone       String            @default("America/Guatemala")
+  status         AppointmentStatus @default(AWAITING_PAYMENT)
+  meetingProvider MeetingProvider?
+  meetingUrl     String?
+  meetingId      String?
+  remindersSent  Int               @default(0)
+  notes          String?           @db.Text
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  patient        Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  service        Service         @relation(fields: [serviceId], references: [id])
+  payment        Payment?
+  nutritionPlan  NutritionPlan?
+
+  @@index([patientId])
+  @@index([scheduledAt])
+  @@index([status])
+  @@map("appointments")
+}
+
+enum AppointmentStatus {
+  AWAITING_PAYMENT
+  PAYMENT_APPROVED
+  SCHEDULED
+  COMPLETED
+  CANCELED
+  NO_SHOW
+}
+
+enum MeetingProvider {
+  GOOGLE_MEET
+  ZOOM
+}
+
+// ============================================================
+// Disponibilidad de la nutricionista (slots configurables)
+// ============================================================
+model AvailabilitySlot {
+  id          String   @id @default(cuid())
+  dayOfWeek   Int      // 0 = domingo, 6 = sábado
+  startMinute Int      // minutos desde medianoche (ej. 09:00 = 540)
+  endMinute   Int
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("availability_slots")
+}
+
+// Bloqueos puntuales (vacaciones, eventos)
+model AvailabilityBlock {
+  id        String   @id @default(cuid())
+  startsAt  DateTime
+  endsAt    DateTime
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([startsAt, endsAt])
+  @@map("availability_blocks")
+}
+
+// ============================================================
+// Planes nutricionales (PDF enviado tras la consulta)
+// ============================================================
+model NutritionPlan {
+  id            String   @id @default(cuid())
+  patientId     String
+  appointmentId String?  @unique
+  title         String
+  fileUrl       String
+  fileMime      String?
+  sentAt        DateTime?
+  sentBy        SendMethod?
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  patient     Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([patientId])
+  @@map("nutrition_plans")
+}
+
+enum SendMethod {
+  EMAIL
+  WHATSAPP
+  BOTH
+}
+
+// ============================================================
+// Log de correos enviados (auditoría y debugging)
+// ============================================================
+model EmailLog {
+  id        String      @id @default(cuid())
+  to        String
+  subject   String
+  template  String      // identificador de template (ej. "appointment-confirmation")
+  status    EmailStatus @default(QUEUED)
+  error     String?     @db.Text
+  sentAt    DateTime?
+  createdAt DateTime    @default(now())
+
+  @@index([to])
+  @@index([template])
+  @@map("email_logs")
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+}
