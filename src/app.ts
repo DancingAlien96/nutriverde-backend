@@ -19,8 +19,8 @@ export function createApp() {
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true }));
 
-  // Servir archivos subidos (comprobantes, planes PDF) — protegidos por auth en el futuro
-  app.use("/uploads", express.static(env.UPLOAD_DIR));
+  // Los uploads (comprobantes, planes PDF) NO se sirven públicamente.
+  // Se acceden vía endpoints autenticados: /api/admin/payments/:id/receipt etc.
 
   app.use("/api", routes);
 
