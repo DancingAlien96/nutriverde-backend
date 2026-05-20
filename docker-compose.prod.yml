@@ -1,0 +1,67 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: nutriverde-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${BUSINESS_TIMEZONE:-America/Guatemala}
+    # En prod NO publicamos MySQL al host (el Pi corre otros proyectos).
+    # El backend se conecta por la red interna del compose: host=mysql, port=3306.
+    expose:
+      - "3306"
+    volumes:
+      - nutriverde_mysql_data:/var/lib/mysql
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=-06:00
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-uroot",
+          "-p${MYSQL_ROOT_PASSWORD}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nutriverde-backend:latest
+    container_name: nutriverde-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Sobrescribimos para que apunte al contenedor mysql por su nombre de servicio
+      DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
+      NODE_ENV: production
+      PORT: 4001
+    ports:
+      - "${BACKEND_PORT:-4001}:4001"
+    volumes:
+      - nutriverde_uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # Aplica migraciones antes de arrancar; útil al actualizar el schema.
+    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+
+volumes:
+  nutriverde_mysql_data:
+    name: nutriverde_mysql_data
+  nutriverde_uploads:
+    name: nutriverde_uploads

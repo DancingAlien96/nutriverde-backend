@@ -9,3 +9,4 @@ uploads/*
 !uploads/.gitkeep
 coverage/
 .vscode/
+.claude/

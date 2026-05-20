@@ -37,8 +37,8 @@ npm run dev
 
 **URLs locales:**
 
-- API: `http://localhost:4000`
-- Health: `http://localhost:4000/api/health`
+- API: `http://localhost:4001`
+- Health: `http://localhost:4001/api/health`
 - Adminer: `http://localhost:8080` (usuario: `nutriverde`, password: `nutriverde_dev`, server: `mysql`)
 
 ---
@@ -125,6 +125,40 @@ prisma/
 3. **Fase 3 — Agenda y citas** — `/api/appointments`, integración Google Meet
 4. **Fase 4 — Panel admin** — auth JWT, `/api/admin/*`
 5. **Fase 5 — Automatizaciones** — recordatorios, tips mensuales
+
+---
+
+## Deploy en producción (Raspberry Pi / VPS)
+
+Para producción usamos un compose distinto que también corre el backend en Docker:
+
+```bash
+# En el servidor — primera vez
+git clone https://github.com/DancingAlien96/nutriverde-backend.git
+cd nutriverde-backend
+cp .env.example .env
+# Edita .env con credenciales reales, SMTP, JWT_SECRET fuerte, etc.
+
+# Levanta todo (mysql + backend). La migración se aplica automáticamente.
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Primera vez: seed inicial (3 servicios + admin)
+docker compose -f docker-compose.prod.yml exec backend npx prisma db seed
+```
+
+```bash
+# Updates
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+```bash
+# Logs y mantenimiento
+docker compose -f docker-compose.prod.yml logs -f backend
+docker compose -f docker-compose.prod.yml exec mysql mysql -u root -p
+```
+
+En prod **MySQL no se expone al host** — solo el backend en `${BACKEND_PORT:-4001}`.
 
 ---
 
