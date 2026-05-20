@@ -18,11 +18,17 @@ const envSchema = z.object({
   UPLOAD_DIR: z.string().default("./uploads"),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(10),
 
-  // SMTP (Gmail)
+  // SMTP (Gmail) — string vacía equivale a "no configurado"
   SMTP_HOST: z.string().default("smtp.gmail.com"),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
-  SMTP_USER: z.string().email().optional(),
-  SMTP_PASS: z.string().optional(),
+  SMTP_USER: z
+    .union([z.string().email(), z.literal("")])
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+  SMTP_PASS: z
+    .string()
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
   MAIL_FROM: z.string().default("NutriVerde <no-reply@nutriverde.com>"),
 
   // Meta del negocio
