@@ -148,6 +148,7 @@ model Appointment {
   durationMin    Int
   timezone       String            @default("America/Guatemala")
   status         AppointmentStatus @default(AWAITING_PAYMENT)
+  scheduleToken  String?           @unique  // token único para el link de auto-agenda
   meetingProvider MeetingProvider?
   meetingUrl     String?
   meetingId      String?
@@ -194,6 +195,17 @@ model AvailabilitySlot {
   updatedAt   DateTime @updatedAt
 
   @@map("availability_slots")
+}
+
+// Configuración del scheduling (singleton: id = "default")
+model SchedulingSettings {
+  id                   String   @id @default("default")
+  allowSameDayBooking  Boolean  @default(true)
+  minLeadMinutes       Int      @default(60)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("scheduling_settings")
 }
 
 // Bloqueos puntuales (vacaciones, eventos)

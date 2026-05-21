@@ -6,6 +6,7 @@ import { receiptUpload, toPublicUrl } from "../lib/upload.js";
 import { sendMail } from "../lib/mailer.js";
 import { env } from "../config/env.js";
 import { HttpError } from "../middlewares/error-handler.js";
+import { isValidSlot } from "../lib/scheduling.js";
 
 const router = Router();
 
@@ -16,6 +17,10 @@ const intakeSchema = z.object({
   whatsappNotify: z.union([z.boolean(), z.string()]).optional(),
   timezone: z.string().trim().default("America/Guatemala"),
   serviceSlug: z.string().trim().min(1, "Servicio requerido"),
+  // Horario tentativo elegido por el paciente (ISO UTC). Si está, se valida
+  // que sea un slot real al momento del intake. La validación final ocurre al
+  // aprobar el pago (otro paciente pudo haber sido aprobado antes).
+  scheduledAt: z.string().datetime().optional().or(z.literal("")),
   // Datos libres del formulario (objetivos, condiciones, etc.)
   goal: z.string().trim().max(2000).optional().or(z.literal("")),
   conditions: z.string().trim().max(2000).optional().or(z.literal("")),
@@ -44,6 +49,20 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
     });
     if (!service || !service.active) {
       throw new HttpError(400, "Servicio no disponible.");
+    }
+
+    // Si el paciente eligió un horario, validamos que sea un slot real ahora.
+    // El conflicto definitivo se vuelve a chequear en el approve.
+    let scheduledAt: Date | null = null;
+    if (parsed.scheduledAt) {
+      scheduledAt = new Date(parsed.scheduledAt);
+      const ok = await isValidSlot(scheduledAt, service.durationMin);
+      if (!ok) {
+        throw new HttpError(
+          409,
+          "Ese horario ya no está disponible. Elige otro.",
+        );
+      }
     }
 
     const receiptUrl = toPublicUrl(req.file.path);
@@ -84,6 +103,7 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
           serviceId: service.id,
           durationMin: service.durationMin,
           timezone: parsed.timezone,
+          scheduledAt,
           status: "AWAITING_PAYMENT",
         },
       });

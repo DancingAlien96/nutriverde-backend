@@ -2,12 +2,14 @@ import { Router } from "express";
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import type { PaymentStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { sendMail } from "../../lib/mailer.js";
 import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
+import { isValidSlot } from "../../lib/scheduling.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -88,6 +90,24 @@ router.post("/:id/approve", async (req, res, next) => {
       throw new HttpError(409, "Este pago ya fue aprobado.");
     }
 
+    // Token de auto-agenda. Se genera solo la primera vez para que el link no
+    // cambie si la nutricionista re-aprueba.
+    const scheduleToken =
+      payment.appointment?.scheduleToken ?? crypto.randomBytes(24).toString("hex");
+
+    // Si el paciente eligió horario al hacer el intake, lo revalidamos:
+    // otro paciente pudo haber sido aprobado para ese mismo slot mientras tanto.
+    let slotStillValid = false;
+    if (payment.appointment?.scheduledAt) {
+      slotStillValid = await isValidSlot(
+        payment.appointment.scheduledAt,
+        payment.appointment.durationMin,
+        payment.appointment.id,
+      );
+    }
+
+    const finalStatus = slotStillValid ? "SCHEDULED" : "PAYMENT_APPROVED";
+
     const updated = await prisma.$transaction(async (tx) => {
       const p = await tx.payment.update({
         where: { id: payment.id },
@@ -102,24 +122,52 @@ router.post("/:id/approve", async (req, res, next) => {
       if (payment.appointmentId) {
         await tx.appointment.update({
           where: { id: payment.appointmentId },
-          data: { status: "PAYMENT_APPROVED" },
+          data: {
+            status: finalStatus,
+            scheduleToken,
+            // Si el slot tentativo ya no es válido, lo limpiamos para que el
+            // paciente elija uno nuevo desde el link de scheduling.
+            ...(payment.appointment?.scheduledAt && !slotStillValid
+              ? { scheduledAt: null }
+              : {}),
+          },
         });
       }
 
       return p;
     });
 
+    const scheduleUrl = `${env.FRONTEND_ORIGIN}/agendar-cita/${scheduleToken}`;
+
     void sendMail({
       to: payment.patient.email,
-      subject: "Tu pago fue confirmado — NutriVerde",
-      template: "payment-approved",
-      html: paymentApprovedHtml({
-        name: payment.patient.fullName,
-        service: payment.service.name,
-      }),
+      subject: slotStillValid
+        ? "Cita confirmada — NutriVerde"
+        : "Tu pago fue confirmado — NutriVerde",
+      template: slotStillValid ? "payment-and-schedule-confirmed" : "payment-approved",
+      html: slotStillValid
+        ? paymentAndScheduleConfirmedHtml({
+            name: payment.patient.fullName,
+            service: payment.service.name,
+            when: payment.appointment!.scheduledAt!,
+            durationMin: payment.appointment!.durationMin,
+            patientTimezone: payment.patient.timezone,
+            scheduleUrl,
+          })
+        : paymentApprovedHtml({
+            name: payment.patient.fullName,
+            service: payment.service.name,
+            scheduleUrl,
+            slotLost: !!payment.appointment?.scheduledAt,
+          }),
     }).catch((err) => console.error("Email approval falló:", err));
 
-    res.json({ ok: true, payment: updated });
+    res.json({
+      ok: true,
+      payment: updated,
+      scheduleUrl,
+      appointmentStatus: finalStatus,
+    });
   } catch (err) {
     next(err);
   }
@@ -170,6 +218,38 @@ router.post("/:id/reject", async (req, res, next) => {
   }
 });
 
+const meetingSchema = z.object({
+  meetingUrl: z.string().trim().url().or(z.literal("")),
+  meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+});
+
+router.post("/:id/meeting", async (req, res, next) => {
+  try {
+    const { meetingUrl, meetingProvider } = meetingSchema.parse(req.body);
+
+    const payment = await prisma.payment.findUnique({
+      where: { id: req.params.id },
+      select: { appointmentId: true },
+    });
+    if (!payment?.appointmentId) {
+      throw new HttpError(404, "Cita no encontrada para este pago.");
+    }
+
+    const updated = await prisma.appointment.update({
+      where: { id: payment.appointmentId },
+      data: {
+        meetingUrl: meetingUrl || null,
+        meetingProvider: meetingUrl ? meetingProvider ?? "GOOGLE_MEET" : null,
+      },
+      select: { id: true, meetingUrl: true, meetingProvider: true },
+    });
+
+    res.json({ ok: true, appointment: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/:id/receipt", async (req, res, next) => {
   try {
     const payment = await prisma.payment.findUnique({
@@ -211,12 +291,71 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function paymentApprovedHtml({ name, service }: { name: string; service: string }): string {
+function paymentApprovedHtml({
+  name,
+  service,
+  scheduleUrl,
+  slotLost,
+}: {
+  name: string;
+  service: string;
+  scheduleUrl: string;
+  slotLost: boolean;
+}): string {
+  const intro = slotLost
+    ? `<p>Verificamos tu comprobante por <strong>${escapeHtml(service)}</strong>. El horario que habías elegido ya no está disponible, pero puedes elegir otro en el siguiente enlace:</p>`
+    : `<p>Verificamos tu comprobante por <strong>${escapeHtml(service)}</strong> y todo está en orden.</p>
+       <p>Ya puedes elegir el día y la hora de tu consulta en el siguiente enlace:</p>`;
   return `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
       <h1 style="color: #059669; font-size: 22px;">¡Tu pago fue confirmado, ${escapeHtml(name)}!</h1>
-      <p>Verificamos tu comprobante por <strong>${escapeHtml(service)}</strong> y todo está en orden.</p>
-      <p>En breve te enviaremos un correo con el enlace para que elijas el horario de tu consulta.</p>
+      ${intro}
+      <p style="margin: 24px 0;">
+        <a href="${escapeHtml(scheduleUrl)}" style="display: inline-block; background: #059669; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
+          Elegir mi horario
+        </a>
+      </p>
+      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace: <br/>${escapeHtml(scheduleUrl)}</p>
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— NutriVerde</p>
+    </div>
+  `;
+}
+
+function paymentAndScheduleConfirmedHtml(opts: {
+  name: string;
+  service: string;
+  when: Date;
+  durationMin: number;
+  patientTimezone: string;
+  scheduleUrl: string;
+}): string {
+  const gtTime = opts.when.toLocaleString("es-GT", {
+    timeZone: "America/Guatemala",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const localTime = opts.when.toLocaleString("es-GT", {
+    timeZone: opts.patientTimezone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const sameTz = opts.patientTimezone === "America/Guatemala";
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <h1 style="color: #059669; font-size: 22px;">¡Tu pago y tu cita están confirmados, ${escapeHtml(opts.name)}!</h1>
+      <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
+      <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
+      ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
+      <p>Te enviaremos el link de la videollamada antes de tu cita.</p>
+      <p style="font-size: 13px; color: #6b7280;">¿Necesitas reprogramar? Puedes elegir otro horario aquí: <br/><a href="${escapeHtml(opts.scheduleUrl)}">${escapeHtml(opts.scheduleUrl)}</a></p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— NutriVerde</p>
     </div>
   `;
