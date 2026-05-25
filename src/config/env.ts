@@ -7,8 +7,21 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
-  // Frontend origin para CORS
-  FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  // Orígenes permitidos para CORS. Acepta:
+  // - URL única: "https://nutriverde.com"
+  // - Lista separada por comas: "https://a.com,https://b.com"
+  // - Wildcard de subdominio: "https://*.vercel.app"
+  // - "*" para permitir cualquier origen (no recomendado con credentials).
+  FRONTEND_ORIGIN: z
+    .string()
+    .min(1)
+    .default("http://localhost:3000")
+    .transform((s) =>
+      s
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean),
+    ),
 
   // JWT para sesiones admin
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 chars"),

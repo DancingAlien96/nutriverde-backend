@@ -12,7 +12,7 @@ export function createApp() {
   app.use(helmet());
   app.use(
     cors({
-      origin: env.FRONTEND_ORIGIN,
+      origin: corsOriginCheck,
       credentials: true,
     }),
   );
@@ -28,4 +28,40 @@ export function createApp() {
   app.use(errorHandler);
 
   return app;
+}
+
+/**
+ * Valida si el origen está permitido. Soporta:
+ * - Match exacto (case-insensitive)
+ * - Wildcard "*" (cualquier origen — desactiva la protección)
+ * - Wildcard de subdominio: "https://*.vercel.app" matchea
+ *   "https://foo.vercel.app", "https://foo-bar.vercel.app", etc.
+ */
+function corsOriginCheck(
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+): void {
+  // Requests sin Origin (curl, server-to-server) se permiten.
+  if (!origin) return callback(null, true);
+
+  const allowed = env.FRONTEND_ORIGIN;
+  const ok = allowed.some((pattern) => matchOrigin(pattern, origin));
+
+  if (ok) return callback(null, true);
+  callback(new Error(`Origin ${origin} no permitido por CORS`));
+}
+
+function matchOrigin(pattern: string, origin: string): boolean {
+  if (pattern === "*") return true;
+  if (pattern.toLowerCase() === origin.toLowerCase()) return true;
+
+  // Wildcard solo en el host (no en el path ni protocolo).
+  if (pattern.includes("*")) {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
+    const re = new RegExp(`^${escaped}$`, "i");
+    return re.test(origin);
+  }
+  return false;
 }
