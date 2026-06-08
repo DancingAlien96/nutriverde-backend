@@ -7,12 +7,27 @@ import { sendMail } from "../lib/mailer.js";
 import { env } from "../config/env.js";
 import { HttpError } from "../middlewares/error-handler.js";
 import { isValidSlot } from "../lib/scheduling.js";
+import {
+  DOCUMENT_TYPES,
+  normalizeDocument,
+  validateDocument,
+} from "../lib/document-id.js";
+import { isUtf8, utf8Message } from "../lib/text.js";
 
 const router = Router();
 
 const intakeSchema = z.object({
-  fullName: z.string().trim().min(2, "Nombre demasiado corto").max(120),
+  fullName: z
+    .string()
+    .trim()
+    .min(2, "Nombre demasiado corto")
+    .max(120)
+    .refine(isUtf8, utf8Message("El nombre")),
   email: z.string().trim().toLowerCase().email("Correo inválido"),
+  // Tipo de documento (DPI, CURP, PASSPORT, OTHER). La validación aplica al
+  // siguiente campo según el tipo elegido.
+  documentType: z.enum(DOCUMENT_TYPES).default("DPI"),
+  documentId: z.string().trim().min(1, "Documento requerido"),
   phone: z.string().trim().min(6).max(30).optional().or(z.literal("")),
   whatsappNotify: z.union([z.boolean(), z.string()]).optional(),
   timezone: z.string().trim().default("America/Guatemala"),
@@ -22,9 +37,27 @@ const intakeSchema = z.object({
   // aprobar el pago (otro paciente pudo haber sido aprobado antes).
   scheduledAt: z.string().datetime().optional().or(z.literal("")),
   // Datos libres del formulario (objetivos, condiciones, etc.)
-  goal: z.string().trim().max(2000).optional().or(z.literal("")),
-  conditions: z.string().trim().max(2000).optional().or(z.literal("")),
-  notes: z.string().trim().max(2000).optional().or(z.literal("")),
+  goal: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine(isUtf8, utf8Message("El objetivo"))
+    .optional()
+    .or(z.literal("")),
+  conditions: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine(isUtf8, utf8Message("Condiciones"))
+    .optional()
+    .or(z.literal("")),
+  notes: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine(isUtf8, utf8Message("Notas"))
+    .optional()
+    .or(z.literal("")),
 });
 
 function coerceBool(v: unknown): boolean {
@@ -43,6 +76,14 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
 
     const parsed = intakeSchema.parse(req.body);
     const whatsappNotify = coerceBool(parsed.whatsappNotify);
+
+    // Normalizamos y validamos el documento según su tipo (DPI 13 dígitos,
+    // CURP 18 chars formato MX, pasaporte alfanumérico, otro libre).
+    const documentId = normalizeDocument(parsed.documentId, parsed.documentType);
+    const docCheck = validateDocument(parsed.documentType, documentId);
+    if (!docCheck.ok) {
+      throw new HttpError(400, docCheck.message);
+    }
 
     const service = await prisma.service.findUnique({
       where: { slug: parsed.serviceSlug },
@@ -68,22 +109,46 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
     const receiptUrl = toPublicUrl(req.file.path);
 
     const result = await prisma.$transaction(async (tx) => {
-      const patient = await tx.patient.upsert({
-        where: { email: parsed.email },
-        update: {
-          fullName: parsed.fullName,
-          phone: parsed.phone || null,
-          whatsappNotify,
-          timezone: parsed.timezone,
-        },
-        create: {
-          fullName: parsed.fullName,
-          email: parsed.email,
-          phone: parsed.phone || null,
-          whatsappNotify,
-          timezone: parsed.timezone,
-        },
+      // Identificación: documento primero (más confiable), luego email.
+      const existingByDoc = await tx.patient.findUnique({
+        where: { documentId },
       });
+      const existingByEmail = !existingByDoc
+        ? await tx.patient.findUnique({ where: { email: parsed.email } })
+        : null;
+      const existing = existingByDoc ?? existingByEmail;
+
+      if (existingByDoc && existingByEmail && existingByDoc.id !== existingByEmail.id) {
+        throw new HttpError(
+          409,
+          "Ese correo ya está registrado a nombre de otra persona. Verifica los datos o usa otro correo.",
+        );
+      }
+
+      const patient = existing
+        ? await tx.patient.update({
+            where: { id: existing.id },
+            data: {
+              fullName: parsed.fullName,
+              email: parsed.email,
+              documentId,
+              documentType: parsed.documentType,
+              phone: parsed.phone || null,
+              whatsappNotify,
+              timezone: parsed.timezone,
+            },
+          })
+        : await tx.patient.create({
+            data: {
+              fullName: parsed.fullName,
+              email: parsed.email,
+              documentId,
+              documentType: parsed.documentType,
+              phone: parsed.phone || null,
+              whatsappNotify,
+              timezone: parsed.timezone,
+            },
+          });
 
       const intake = await tx.intakeForm.create({
         data: {
@@ -127,7 +192,7 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
     // Confirmación al paciente (best-effort; no bloquea la respuesta)
     void sendMail({
       to: parsed.email,
-      subject: "Recibimos tu solicitud — NutriVerde",
+      subject: "Recibimos tu solicitud — Plenha Nutrition",
       template: "intake-confirmation",
       html: confirmationHtml({
         name: parsed.fullName,
@@ -177,7 +242,7 @@ function confirmationHtml({ name, service }: { name: string; service: string }):
       <p>Recibimos tu solicitud para <strong>${escapeHtml(service)}</strong>.</p>
       <p>Estamos verificando tu comprobante de pago. En máximo <strong>24 horas</strong> te enviaremos un correo confirmando el pago y un enlace para que elijas el horario de tu consulta.</p>
       <p>Si tienes alguna pregunta urgente, puedes responder este correo.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— NutriVerde</p>
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
     </div>
   `;
 }

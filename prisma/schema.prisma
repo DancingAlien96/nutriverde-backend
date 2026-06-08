@@ -28,6 +28,13 @@ model AdminUser {
   @@map("admin_users")
 }
 
+enum DocumentType {
+  DPI       // Guatemala
+  CURP      // México
+  PASSPORT  // Pasaporte internacional
+  OTHER     // Otro tipo de documento
+}
+
 enum AdminRole {
   NUTRITIONIST
   STAFF
@@ -40,11 +47,32 @@ model Patient {
   id              String   @id @default(cuid())
   fullName        String
   email           String   @unique
+  // Documento de identidad. La API exige el campo en el intake.
+  // Tipo configurable porque hay pacientes de varios países:
+  //   DPI      Guatemala (13 dígitos)
+  //   CURP     México (18 alfanuméricos)
+  //   PASSPORT Cualquier país
+  //   OTHER    cualquier otro identificador
+  documentId      String?       @unique
+  documentType    DocumentType  @default(DPI)
   phone           String?
   whatsappNotify  Boolean  @default(false)
   timezone        String   @default("America/Guatemala")
   referralSource  String?  // quién lo refirió (texto libre opcional)
   notes           String?  @db.Text
+
+  // --- Datos clínicos (que la nutricionista llena en consulta inicial) ---
+  birthDate          DateTime?
+  heightCm           Int?     // estatura en cm (170 = 1.70m)
+  allergies          String?  @db.Text
+  medicalConditions  String?  @db.Text
+  medications        String?  @db.Text
+  alcoholNotes       String?
+  cravingsNotes      String?
+  waterCoffeeNotes   String?
+  dislikedFoods      String?  @db.Text
+  weekendSpots       String?  @db.Text
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -52,9 +80,108 @@ model Patient {
   payments        Payment[]
   appointments    Appointment[]
   nutritionPlans  NutritionPlan[]
+  diagnoses       PatientDiagnosis[]
+  trainings       PatientTraining[]
+  measurements    AnthropometricMeasurement[]
+  mealPlans       MealPlan[]
 
   @@index([email])
   @@map("patients")
+}
+
+// ============================================================
+// Datos clínicos por consulta (historial)
+// ============================================================
+
+/// Objetivos y metas del paciente. Cada entrada es una "captura" — la nutricionista
+/// puede actualizar y queda el historial.
+model PatientDiagnosis {
+  id              String   @id @default(cuid())
+  patientId       String
+  objective       String?  @db.Text
+  goalFatPercent  Float?
+  goalFatLossLbs  Float?
+  goalLeanMassKg  Float?
+  notes           String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_diagnoses")
+}
+
+/// Plan de entrenamiento (gimnasio/actividad física).
+model PatientTraining {
+  id        String   @id @default(cuid())
+  patientId String
+  duration  String?
+  frequency String?
+  schedule  String?  @db.Text
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_trainings")
+}
+
+/// Mediciones antropométricas — una por visita. La "tabla de citas" de la hoja
+/// de consulta inicial.
+model AnthropometricMeasurement {
+  id                String   @id @default(cuid())
+  patientId         String
+  appointmentId     String?
+  measuredAt        DateTime @default(now())
+  visitNumber       Int?     // #1, #2... opcional, solo de referencia
+
+  // Composición corporal
+  weightKg          Float?
+  fatPercent        Float?
+  waterPercent      Float?
+  leanMassKg        Float?
+  metabolicAge      Int?
+  visceralFat       Int?
+  caliperFatPercent Float?
+
+  // Circunferencias (cm)
+  chestCm           Float?
+  waistCm           Float?
+  abdomenCm         Float?
+  hipCm             Float?
+  armCm             Float?
+  thighCm           Float?
+  calfCm            Float?
+
+  notes             String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@index([measuredAt])
+  @@map("anthropometric_measurements")
+}
+
+/// Plan alimentario estructurado (5 comidas). Es distinto de NutritionPlan
+/// (que es el PDF entregable). Aquí va la estructura editable.
+model MealPlan {
+  id              String   @id @default(cuid())
+  patientId       String
+  title           String?
+  breakfast       String?  @db.Text
+  morningSnack    String?  @db.Text
+  lunch           String?  @db.Text
+  afternoonSnack  String?  @db.Text
+  dinner          String?  @db.Text
+  notes           String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("meal_plans")
 }
 
 // ============================================================
@@ -171,6 +298,7 @@ model Appointment {
 enum AppointmentStatus {
   AWAITING_PAYMENT
   PAYMENT_APPROVED
+  PENDING_CONFIRMATION  // el paciente propuso una hora, falta que el admin la confirme + ponga el link
   SCHEDULED
   COMPLETED
   CANCELED

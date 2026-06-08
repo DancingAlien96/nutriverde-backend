@@ -42,7 +42,7 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v === "" ? undefined : v)),
-  MAIL_FROM: z.string().default("NutriVerde <no-reply@nutriverde.com>"),
+  MAIL_FROM: z.string().default("Plenha Nutrition <no-reply@plenhanutrition.com>"),
 
   // Meta del negocio
   BUSINESS_TIMEZONE: z.string().default("America/Guatemala"),

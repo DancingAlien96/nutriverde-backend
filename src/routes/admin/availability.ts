@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
+import { isUtf8, utf8Message } from "../../lib/text.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -135,7 +136,13 @@ const blockSchema = z
   .object({
     startsAt: z.string().datetime(),
     endsAt: z.string().datetime(),
-    reason: z.string().trim().max(200).optional().or(z.literal("")),
+    reason: z
+      .string()
+      .trim()
+      .max(200)
+      .refine(isUtf8, utf8Message("La razón"))
+      .optional()
+      .or(z.literal("")),
   })
   .refine((d) => new Date(d.startsAt) < new Date(d.endsAt), {
     message: "startsAt debe ser anterior a endsAt",

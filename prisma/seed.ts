@@ -13,7 +13,7 @@ async function seedServices() {
       slug: "consulta-inicial",
       name: "Consulta Inicial",
       description:
-        "Evaluación completa de tu estado nutricional, hábitos alimentarios, objetivos y plan de alimentación personalizado para comenzar tu transformación.",
+        "Una evaluación integral de tu salud, hábitos, estilo de vida y objetivos. Revisaremos tu historial médico, alimentación actual, rutina y necesidades específicas para desarrollar una estrategia nutricional personalizada y sostenible.",
       priceCents: 35000, // Q350.00
       currency: "GTQ",
       durationMin: 60,
@@ -24,7 +24,7 @@ async function seedServices() {
       slug: "consulta-seguimiento",
       name: "Consulta de Seguimiento",
       description:
-        "Revisamos tus avances, ajustamos el plan según tus resultados y resolvemos dudas para mantener tu progreso.",
+        "Diseñadas para evaluar avances, resolver dificultades y realizar los ajustes necesarios para continuar progresando hacia tus objetivos de manera realista y sostenible.",
       priceCents: 25000, // Q250.00
       currency: "GTQ",
       durationMin: 45,
@@ -32,15 +32,26 @@ async function seedServices() {
       sortOrder: 2,
     },
     {
-      slug: "plan-premium",
-      name: "Plan Nutricional Premium",
+      slug: "coaching-nutricional",
+      name: "Coaching Nutricional y Cambio de Hábitos",
       description:
-        "Acompañamiento mensual con plan completo, ajustes ilimitados y soporte continuo por WhatsApp.",
-      priceCents: 55000, // Q550.00
+        "Un espacio enfocado en ayudarte a implementar cambios duraderos en tu alimentación y estilo de vida. Ideal para mejorar tu relación con la comida, fortalecer hábitos saludables y desarrollar estrategias prácticas para mantener resultados a largo plazo.",
+      priceCents: 0, // pendiente de definir por la nutricionista
       currency: "GTQ",
       durationMin: 60,
-      billingType: "MONTHLY" as const,
+      billingType: "ONE_TIME" as const,
       sortOrder: 3,
+    },
+    {
+      slug: "nutricion-deportiva",
+      name: "Nutrición Deportiva",
+      description:
+        "Diseñada para corredores, atletas y personas que se preparan para competencias o eventos de resistencia. Estrategias de alimentación, hidratación y suplementación basadas en evidencia para optimizar el rendimiento, favorecer la recuperación y apoyar tus objetivos deportivos.",
+      priceCents: 0, // pendiente de definir por la nutricionista
+      currency: "GTQ",
+      durationMin: 60,
+      billingType: "ONE_TIME" as const,
+      sortOrder: 4,
     },
   ];
 
@@ -51,6 +62,13 @@ async function seedServices() {
       create: s,
     });
   }
+
+  // Desactivar el servicio "Plan Premium" anterior si existe (ya no se ofrece).
+  await prisma.service.updateMany({
+    where: { slug: "plan-premium" },
+    data: { active: false },
+  });
+
   console.log(`✓ Upserted ${services.length} services`);
 }
 

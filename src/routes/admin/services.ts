@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
+import { isUtf8, utf8Message } from "../../lib/text.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -30,8 +31,17 @@ const slugSchema = z
 
 const createSchema = z.object({
   slug: slugSchema,
-  name: z.string().trim().min(2).max(120),
-  description: z.string().trim().max(2000),
+  name: z
+    .string()
+    .trim()
+    .min(2)
+    .max(120)
+    .refine(isUtf8, utf8Message("El nombre")),
+  description: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine(isUtf8, utf8Message("La descripción")),
   priceCents: z.number().int().min(0),
   currency: z.string().trim().length(3).default("GTQ"),
   durationMin: z.number().int().min(0).max(8 * 60),
@@ -81,8 +91,19 @@ router.post("/", async (req, res, next) => {
 });
 
 const updateSchema = z.object({
-  name: z.string().trim().min(2).max(120).optional(),
-  description: z.string().trim().max(2000).optional(),
+  name: z
+    .string()
+    .trim()
+    .min(2)
+    .max(120)
+    .refine(isUtf8, utf8Message("El nombre"))
+    .optional(),
+  description: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine(isUtf8, utf8Message("La descripción"))
+    .optional(),
   priceCents: z.number().int().min(0).optional(),
   currency: z.string().trim().length(3).optional(),
   durationMin: z.number().int().min(0).max(8 * 60).optional(),

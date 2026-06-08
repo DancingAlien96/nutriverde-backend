@@ -108,27 +108,49 @@ router.post("/:token/confirm", async (req, res, next) => {
       throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
     }
 
+    // El horario que elige el paciente queda como PROPUESTA: la cita pasa a
+    // PENDING_CONFIRMATION. La nutricionista debe aceptarla y agregar el link
+    // de la videollamada; recién ahí se vuelve SCHEDULED y el paciente recibe
+    // el correo con el enlace.
     const updated = await prisma.appointment.update({
       where: { id: appt.id },
       data: {
         scheduledAt,
-        status: "SCHEDULED",
+        status: "PENDING_CONFIRMATION",
       },
     });
 
+    // Aviso al paciente: recibimos tu horario, falta confirmación.
     void sendMail({
       to: appt.patient.email,
-      subject: "Cita confirmada — NutriVerde",
-      template: "appointment-confirmed",
-      html: confirmationHtml({
+      subject: "Recibimos tu horario — Plenha Nutrition",
+      template: "appointment-proposed",
+      html: proposedHtml({
         name: appt.patient.fullName,
         service: appt.service.name,
         when: scheduledAt,
         durationMin: appt.durationMin,
-        meetingUrl: updated.meetingUrl,
         patientTimezone: appt.patient.timezone,
       }),
-    }).catch((err) => console.error("Email confirmación falló:", err));
+    }).catch((err) => console.error("Email propuesta falló:", err));
+
+    // Notificación a la nutricionista para que confirme.
+    const admin = await prisma.adminUser.findFirst({
+      where: { active: true, role: "NUTRITIONIST" },
+      select: { email: true },
+    });
+    if (admin) {
+      void sendMail({
+        to: admin.email,
+        subject: `Horario propuesto: ${appt.patient.fullName}`,
+        template: "appointment-proposed-admin",
+        html: adminProposedHtml({
+          patientName: appt.patient.fullName,
+          service: appt.service.name,
+          when: scheduledAt,
+        }),
+      }).catch((err) => console.error("Email admin propuesta falló:", err));
+    }
 
     res.json({
       ok: true,
@@ -152,15 +174,8 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function confirmationHtml(opts: {
-  name: string;
-  service: string;
-  when: Date;
-  durationMin: number;
-  meetingUrl: string | null;
-  patientTimezone: string;
-}): string {
-  const gtTime = opts.when.toLocaleString("es-GT", {
+function fmtGt(when: Date): string {
+  return when.toLocaleString("es-GT", {
     timeZone: "America/Guatemala",
     weekday: "long",
     day: "numeric",
@@ -169,6 +184,17 @@ function confirmationHtml(opts: {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Correo al paciente: recibimos tu horario, falta confirmación de la nutricionista. */
+function proposedHtml(opts: {
+  name: string;
+  service: string;
+  when: Date;
+  durationMin: number;
+  patientTimezone: string;
+}): string {
+  const gtTime = fmtGt(opts.when);
   const localTime = opts.when.toLocaleString("es-GT", {
     timeZone: opts.patientTimezone,
     weekday: "long",
@@ -178,20 +204,35 @@ function confirmationHtml(opts: {
     hour: "2-digit",
     minute: "2-digit",
   });
-
-  const meetingBlock = opts.meetingUrl
-    ? `<p><strong>Link de la consulta:</strong> <a href="${escapeHtml(opts.meetingUrl)}">${escapeHtml(opts.meetingUrl)}</a></p>`
-    : `<p>Te enviaremos el link de la videollamada antes de tu cita.</p>`;
-
+  const sameTz = opts.patientTimezone === "America/Guatemala";
   return `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
-      <h1 style="color: #059669; font-size: 22px;">¡Tu cita está confirmada, ${escapeHtml(opts.name)}!</h1>
-      <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
+      <h1 style="color: #687445; font-size: 22px;">Recibimos tu horario, ${escapeHtml(opts.name)}</h1>
+      <p>Solicitaste <strong>${escapeHtml(opts.service)}</strong> (${opts.durationMin} min) para:</p>
       <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
-      <p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>
-      ${meetingBlock}
-      <p style="margin-top: 24px;">Si necesitas reprogramar, responde a este correo y lo coordinamos.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— NutriVerde</p>
+      ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
+      <p style="margin-top: 16px;">Estamos confirmando la disponibilidad. En breve te enviaremos un correo con la
+      confirmación final y el <strong>enlace de la videollamada</strong>.</p>
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    </div>
+  `;
+}
+
+/** Correo a la nutricionista: hay un horario propuesto para confirmar. */
+function adminProposedHtml(opts: {
+  patientName: string;
+  service: string;
+  when: Date;
+}): string {
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <h2>Horario propuesto por un paciente</h2>
+      <ul style="line-height: 1.8;">
+        <li><strong>Paciente:</strong> ${escapeHtml(opts.patientName)}</li>
+        <li><strong>Servicio:</strong> ${escapeHtml(opts.service)}</li>
+        <li><strong>Fecha propuesta:</strong> ${escapeHtml(fmtGt(opts.when))}</li>
+      </ul>
+      <p>Entra al panel para aceptar la cita y enviar el enlace de la videollamada.</p>
     </div>
   `;
 }
