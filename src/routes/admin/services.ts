@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
+import { toBilingual } from "../../lib/translate.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -71,11 +72,21 @@ router.post("/", async (req, res, next) => {
       sortOrder = (last?.sortOrder ?? 0) + 1;
     }
 
+    // Auto-traducción overlay EN/ES (no bloquea si falla).
+    const [nameTr, descTr] = await Promise.all([
+      toBilingual(data.name),
+      toBilingual(data.description),
+    ]);
+
     const service = await prisma.service.create({
       data: {
         slug: data.slug,
         name: data.name,
         description: data.description,
+        nameEn: nameTr.en,
+        nameEs: nameTr.es,
+        descriptionEn: descTr.en,
+        descriptionEs: descTr.es,
         priceCents: data.priceCents,
         currency: data.currency,
         durationMin: data.durationMin,
@@ -120,9 +131,27 @@ router.put("/:id", async (req, res, next) => {
     });
     if (!existing) throw new HttpError(404, "Servicio no encontrado.");
 
+    // Si cambió el nombre o la descripción, regeneramos las traducciones.
+    const translations: {
+      nameEn?: string;
+      nameEs?: string;
+      descriptionEn?: string;
+      descriptionEs?: string;
+    } = {};
+    if (patch.name !== undefined) {
+      const tr = await toBilingual(patch.name);
+      translations.nameEn = tr.en;
+      translations.nameEs = tr.es;
+    }
+    if (patch.description !== undefined) {
+      const tr = await toBilingual(patch.description);
+      translations.descriptionEn = tr.en;
+      translations.descriptionEs = tr.es;
+    }
+
     const service = await prisma.service.update({
       where: { id: req.params.id },
-      data: patch,
+      data: { ...patch, ...translations },
     });
     res.json({ service });
   } catch (err) {

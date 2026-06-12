@@ -10,6 +10,7 @@ import {
   validateDocument,
 } from "../../lib/document-id.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
+import { sendMail } from "../../lib/mailer.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -389,6 +390,48 @@ router.delete("/:patientId/meal-plans/:id", async (req, res, next) => {
   }
 });
 
+// Envía el meal plan al correo registrado del paciente.
+router.post("/:patientId/meal-plans/:id/send", async (req, res, next) => {
+  try {
+    const mealPlan = await prisma.mealPlan.findUnique({
+      where: { id: req.params.id },
+      include: {
+        patient: { select: { id: true, fullName: true, email: true } },
+      },
+    });
+
+    if (!mealPlan || mealPlan.patientId !== req.params.patientId) {
+      throw new HttpError(404, "Meal plan not found.");
+    }
+    if (!mealPlan.patient.email) {
+      throw new HttpError(400, "The patient has no email on file.");
+    }
+
+    const { html, text } = buildMealPlanEmail({
+      name: mealPlan.patient.fullName,
+      title: mealPlan.title,
+      breakfast: mealPlan.breakfast,
+      morningSnack: mealPlan.morningSnack,
+      lunch: mealPlan.lunch,
+      afternoonSnack: mealPlan.afternoonSnack,
+      dinner: mealPlan.dinner,
+      notes: mealPlan.notes,
+    });
+
+    await sendMail({
+      to: mealPlan.patient.email,
+      subject: `${mealPlan.title?.trim() || "Your meal plan / Tu plan de alimentación"} — Plenha Nutrition`,
+      template: "meal-plan",
+      html,
+      text,
+    });
+
+    res.json({ ok: true, sentTo: mealPlan.patient.email });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ============================================================
 // PDF del expediente
 // ============================================================
@@ -434,6 +477,101 @@ async function assertPatientExists(id: string): Promise<void> {
     select: { id: true },
   });
   if (!exists) throw new HttpError(404, "Paciente no encontrado.");
+}
+
+// ============================================================
+// Email del meal plan
+// ============================================================
+
+interface MealPlanEmailInput {
+  name: string;
+  title: string | null;
+  breakfast: string | null;
+  morningSnack: string | null;
+  lunch: string | null;
+  afternoonSnack: string | null;
+  dinner: string | null;
+  notes: string | null;
+}
+
+function buildMealPlanEmail(p: MealPlanEmailInput): {
+  html: string;
+  text: string;
+} {
+  // Etiquetas bilingües (inglés / español) — el contenido del plan se muestra
+  // tal cual lo escribió la nutricionista.
+  const sections: { label: string; value: string | null }[] = [
+    { label: "Breakfast / Desayuno", value: p.breakfast },
+    { label: "Morning snack / Refacción matutina", value: p.morningSnack },
+    { label: "Lunch / Almuerzo", value: p.lunch },
+    { label: "Afternoon snack / Refacción vespertina", value: p.afternoonSnack },
+    { label: "Dinner / Cena", value: p.dinner },
+  ];
+  const filled = sections.filter((s) => s.value && s.value.trim());
+
+  const title = p.title?.trim() || "Your meal plan / Tu plan de alimentación";
+
+  const rowsHtml = filled
+    .map(
+      (s) => `
+      <tr>
+        <td style="padding: 12px 14px; vertical-align: top; width: 160px; font-weight: 600; color: #687445; border-bottom: 1px solid #ece7dd;">
+          ${escapeHtml(s.label)}
+        </td>
+        <td style="padding: 12px 14px; vertical-align: top; color: #353029; border-bottom: 1px solid #ece7dd; white-space: pre-wrap;">
+          ${escapeHtml(s.value as string)}
+        </td>
+      </tr>`,
+    )
+    .join("");
+
+  const notesHtml =
+    p.notes && p.notes.trim()
+      ? `<div style="margin-top: 20px; padding: 14px 16px; background: #f8f4ea; border-radius: 12px;">
+           <p style="margin: 0 0 6px; font-weight: 600; color: #687445;">Notes / Notas</p>
+           <p style="margin: 0; color: #353029; white-space: pre-wrap;">${escapeHtml(p.notes)}</p>
+         </div>`
+      : "";
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #26221d;">
+      <h1 style="color: #687445; font-size: 22px; margin-bottom: 4px;">Hi / Hola ${escapeHtml(p.name)},</h1>
+      <p style="color: #6b6353; font-size: 15px; margin-top: 0;">
+        Here is your meal plan. If you have any questions, just reply to this email.
+        <br />
+        <span style="color: #8a8273;">Aquí está tu plan de alimentación. Si tienes alguna duda, responde a este correo.</span>
+      </p>
+      <h2 style="font-size: 18px; color: #26221d; margin-top: 28px;">${escapeHtml(title)}</h2>
+      <table style="width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px;">
+        ${rowsHtml || `<tr><td style="padding: 12px 14px; color: #6b6353;">No meals were specified. / No se especificaron comidas.</td></tr>`}
+      </table>
+      ${notesHtml}
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    </div>`;
+
+  const textLines = [
+    `Hi / Hola ${p.name},`,
+    "",
+    "Here is your meal plan / Aquí está tu plan de alimentación:",
+    "",
+    title,
+    ...filled.map((s) => `- ${s.label}: ${s.value}`),
+  ];
+  if (p.notes && p.notes.trim()) {
+    textLines.push("", `Notes / Notas: ${p.notes}`);
+  }
+  textLines.push("", "— Plenha Nutrition");
+
+  return { html, text: textLines.join("\n") };
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export default router;

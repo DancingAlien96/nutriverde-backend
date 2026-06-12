@@ -4,6 +4,8 @@ import paymentsRouter from "./payments.js";
 import availabilityRouter from "./availability.js";
 import servicesRouter from "./services.js";
 import patientsRouter from "./patients.js";
+import remindersRouter from "./reminders.js";
+import appointmentsRouter from "./appointments.js";
 
 const router = Router();
 
@@ -12,5 +14,7 @@ router.use("/payments", paymentsRouter);
 router.use("/availability", availabilityRouter);
 router.use("/services", servicesRouter);
 router.use("/patients", patientsRouter);
+router.use("/reminders", remindersRouter);
+router.use("/appointments", appointmentsRouter);
 
 export default router;
