@@ -24,6 +24,7 @@ router.get("/", async (_req, res, next) => {
         nameEs: true,
         descriptionEn: true,
         descriptionEs: true,
+        imageUrl: true,
         priceCents: true,
         currency: true,
         durationMin: true,

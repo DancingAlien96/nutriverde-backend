@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import path from "node:path";
 import { env } from "./config/env.js";
 import routes from "./routes/index.js";
 import { errorHandler, notFoundHandler } from "./middlewares/error-handler.js";
@@ -21,6 +22,20 @@ export function createApp() {
 
   // Los uploads (comprobantes, planes PDF) NO se sirven públicamente.
   // Se acceden vía endpoints autenticados: /api/admin/payments/:id/receipt etc.
+  // EXCEPCIÓN: las imágenes de servicios SÍ son públicas (se muestran en la
+  // landing). Solo exponemos esa subcarpeta, no toda la carpeta de uploads.
+  app.use(
+    "/uploads/services",
+    express.static(path.join(env.UPLOAD_DIR, "services"), {
+      maxAge: "7d",
+      fallthrough: false,
+      setHeaders: (res) => {
+        // Permite que el frontend (otro origen) incruste la imagen.
+        // helmet pone CORP: same-origin por defecto, que la bloquearía.
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      },
+    }),
+  );
 
   app.use("/api", routes);
 

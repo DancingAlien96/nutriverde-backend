@@ -41,6 +41,39 @@ export const receiptUpload = multer({
   },
 });
 
+// ── Imágenes de servicios (públicas) ───────────────────────────────
+const IMAGE_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+export const servicesImageDir = path.join(env.UPLOAD_DIR, "services");
+fs.mkdirSync(servicesImageDir, { recursive: true });
+
+const serviceImageStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, servicesImageDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+    const id = crypto.randomBytes(10).toString("hex");
+    cb(null, `${Date.now()}-${id}${ext}`);
+  },
+});
+
+export const serviceImageUpload = multer({
+  storage: serviceImageStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (IMAGE_MIMES.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Image type not allowed: ${file.mimetype}`));
+    }
+  },
+});
+
 /** Convierte una ruta absoluta del filesystem en URL relativa servida por Express */
 export function toPublicUrl(filePath: string): string {
   const absUploadDir = path.resolve(env.UPLOAD_DIR);

@@ -216,6 +216,7 @@ model Service {
   nameEs        String?
   descriptionEn String? @db.Text
   descriptionEs String? @db.Text
+  imageUrl      String?            // imagen pública del servicio (/uploads/services/..)
   priceCents  Int                  // precio en centavos (Q350.00 -> 35000)
   currency    String   @default("GTQ")
   durationMin Int                  // duración en minutos (0 si es mensual)

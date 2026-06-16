@@ -5,6 +5,13 @@ import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
 import { toBilingual } from "../../lib/translate.js";
+import {
+  serviceImageUpload,
+  servicesImageDir,
+  toPublicUrl,
+} from "../../lib/upload.js";
+import path from "node:path";
+import fs from "node:fs";
 
 const router = Router();
 router.use(requireAdmin);
@@ -182,5 +189,45 @@ router.delete("/:id", async (req, res, next) => {
     next(err);
   }
 });
+
+// Sube/reemplaza la imagen pública de un servicio (campo "image").
+router.post(
+  "/:id/image",
+  serviceImageUpload.single("image"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) throw new HttpError(400, "No image file was uploaded.");
+
+      const existing = await prisma.service.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!existing) {
+        // Limpia el archivo recién subido si el servicio no existe.
+        fs.unlink(req.file.path, () => {});
+        throw new HttpError(404, "Servicio no encontrado.");
+      }
+
+      const imageUrl = toPublicUrl(req.file.path);
+      const service = await prisma.service.update({
+        where: { id: req.params.id },
+        data: { imageUrl },
+      });
+
+      // Borra la imagen anterior (si era una subida nuestra y cambió).
+      if (
+        existing.imageUrl &&
+        existing.imageUrl !== imageUrl &&
+        existing.imageUrl.startsWith("/uploads/services/")
+      ) {
+        const oldName = path.basename(existing.imageUrl);
+        fs.unlink(path.join(servicesImageDir, oldName), () => {});
+      }
+
+      res.json({ service });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;
