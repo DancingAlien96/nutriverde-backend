@@ -26,6 +26,7 @@ router.get("/", async (_req, res, next) => {
         descriptionEs: true,
         imageUrl: true,
         priceCents: true,
+        priceUsdCents: true,
         currency: true,
         durationMin: true,
         billingType: true,
@@ -36,6 +37,8 @@ router.get("/", async (_req, res, next) => {
       services: services.map((s) => ({
         ...s,
         priceFormatted: formatPrice(s.priceCents, s.currency),
+        priceUsdFormatted:
+          s.priceUsdCents != null ? formatPrice(s.priceUsdCents, "USD") : null,
       })),
     });
   } catch (err) {
@@ -122,8 +125,10 @@ router.get("/:slug/candidate-dates", async (req, res, next) => {
 
 function formatPrice(cents: number, currency: string): string {
   const amount = cents / 100;
-  if (currency === "GTQ") {
-    return `Q${amount.toFixed(0)}`;
+  if (currency === "GTQ") return `Q${amount.toFixed(0)}`;
+  if (currency === "USD") {
+    // Sin decimales si es monto entero (US$69), con decimales si aplica.
+    return Number.isInteger(amount) ? `US$${amount.toFixed(0)}` : `US$${amount.toFixed(2)}`;
   }
   return `${currency} ${amount.toFixed(2)}`;
 }

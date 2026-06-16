@@ -31,6 +31,8 @@ const intakeSchema = z.object({
   phone: z.string().trim().min(6).max(30).optional().or(z.literal("")),
   whatsappNotify: z.union([z.boolean(), z.string()]).optional(),
   timezone: z.string().trim().default("America/Guatemala"),
+  // Región para el precio: GT = quetzales, INTL = dólares.
+  region: z.enum(["GT", "INTL"]).default("GT"),
   serviceSlug: z.string().trim().min(1, "Servicio requerido"),
   // Horario tentativo elegido por el paciente (ISO UTC). Si está, se valida
   // que sea un slot real al momento del intake. La validación final ocurre al
@@ -77,6 +79,21 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
     const parsed = intakeSchema.parse(req.body);
     const whatsappNotify = coerceBool(parsed.whatsappNotify);
 
+    // Coherencia región/documento: el precio de Guatemala (en quetzales) solo
+    // se permite con DPI; las otras regiones (USD) no pueden usar DPI.
+    if (parsed.region === "GT" && parsed.documentType !== "DPI") {
+      throw new HttpError(
+        400,
+        "El precio de Guatemala requiere un DPI. Si estás en otro país, elige 'Otro país' y usa pasaporte u otro documento.",
+      );
+    }
+    if (parsed.region === "INTL" && parsed.documentType === "DPI") {
+      throw new HttpError(
+        400,
+        "El DPI corresponde al precio de Guatemala. Para el precio internacional usa pasaporte, CURP u otro documento.",
+      );
+    }
+
     // Normalizamos y validamos el documento según su tipo (DPI 13 dígitos,
     // CURP 18 chars formato MX, pasaporte alfanumérico, otro libre).
     const documentId = normalizeDocument(parsed.documentId, parsed.documentType);
@@ -105,6 +122,11 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
         );
       }
     }
+
+    // Precio según la región elegida (GT = quetzales, INTL = dólares).
+    const useUsd = parsed.region === "INTL" && service.priceUsdCents != null;
+    const payAmountCents = useUsd ? service.priceUsdCents! : service.priceCents;
+    const payCurrency = useUsd ? "USD" : service.currency;
 
     const receiptUrl = toPublicUrl(req.file.path);
 
@@ -178,8 +200,8 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
           patientId: patient.id,
           serviceId: service.id,
           appointmentId: appointment.id,
-          amountCents: service.priceCents,
-          currency: service.currency,
+          amountCents: payAmountCents,
+          currency: payCurrency,
           receiptUrl,
           receiptMime: req.file!.mimetype,
           status: "PENDING_REVIEW",

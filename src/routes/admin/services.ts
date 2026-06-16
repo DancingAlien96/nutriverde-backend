@@ -51,6 +51,7 @@ const createSchema = z.object({
     .max(2000)
     .refine(isUtf8, utf8Message("La descripción")),
   priceCents: z.number().int().min(0),
+  priceUsdCents: z.number().int().min(0).nullable().optional(),
   currency: z.string().trim().length(3).default("GTQ"),
   durationMin: z.number().int().min(0).max(8 * 60),
   billingType: z.enum(["ONE_TIME", "MONTHLY"]).default("ONE_TIME"),
@@ -95,6 +96,7 @@ router.post("/", async (req, res, next) => {
         descriptionEn: descTr.en,
         descriptionEs: descTr.es,
         priceCents: data.priceCents,
+        priceUsdCents: data.priceUsdCents ?? null,
         currency: data.currency,
         durationMin: data.durationMin,
         billingType: data.billingType,
@@ -123,6 +125,7 @@ const updateSchema = z.object({
     .refine(isUtf8, utf8Message("La descripción"))
     .optional(),
   priceCents: z.number().int().min(0).optional(),
+  priceUsdCents: z.number().int().min(0).nullable().optional(),
   currency: z.string().trim().length(3).optional(),
   durationMin: z.number().int().min(0).max(8 * 60).optional(),
   billingType: z.enum(["ONE_TIME", "MONTHLY"]).optional(),
