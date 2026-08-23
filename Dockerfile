@@ -47,4 +47,7 @@ USER node
 EXPOSE 4001
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/server.js"]
+# Aplica migraciones pendientes y luego arranca el servidor.
+# `exec` reemplaza al shell por node, para que tini le entregue SIGTERM
+# directamente y funcione el apagado ordenado de src/server.ts.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/server.js"]
