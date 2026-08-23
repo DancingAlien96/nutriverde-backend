@@ -54,8 +54,19 @@ services:
       DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
       NODE_ENV: production
       PORT: 4001
-    # No publicamos 4001 al host: el único camino de entrada es Caddy, que
-    # termina el TLS. Publicarlo aquí dejaría la API accesible por HTTP plano.
+    # No publicamos 4001 al host. El TLS y el ruteo de api.plenhanutrition.com
+    # los resuelve el Traefik que Dokploy ya trae; le basta alcanzar el
+    # contenedor por la red interna. Publicarlo aquí dejaría la API accesible
+    # por HTTP plano, saltándose el proxy.
+    #
+    # Para que Traefik lo alcance, el servicio debe compartir la red de Dokploy.
+    # Si Dokploy no la adjunta solo al desplegar este compose, descomenta:
+    #   networks:
+    #     - dokploy-network
+    # y al final del archivo:
+    #   networks:
+    #     dokploy-network:
+    #       external: true
     expose:
       - "4001"
     volumes:
@@ -78,29 +89,8 @@ services:
       # Generoso: el contenedor corre `prisma migrate deploy` antes de escuchar.
       start_period: 60s
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: nutriverde-caddy
-    restart: unless-stopped
-    # Caddy saca y renueva el certificado de Let's Encrypt solo. Requiere que
-    # api.plenhanutrition.com apunte por DNS a la IP pública de este host y que
-    # los puertos 80 y 443 estén abiertos hacia él.
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data # certificados — NO borrar este volumen
-      - caddy_config:/config
-    depends_on:
-      - backend
-
 volumes:
   nutriverde_mysql_data:
     name: nutriverde_mysql_data
   nutriverde_uploads:
     name: nutriverde_uploads
-  caddy_data:
-    name: nutriverde_caddy_data
-  caddy_config:
-    name: nutriverde_caddy_config
