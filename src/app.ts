@@ -10,6 +10,10 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
+  // Detrás de Caddy (ver docker/Caddyfile) req.ip debe ser la IP real del
+  // cliente y no la del proxy, o el rate limit del login limitaría a todo el
+  // mundo como si fuera una sola IP. El 1 es el número de saltos de proxy.
+  app.set("trust proxy", 1);
   app.use(helmet());
   app.use(
     cors({

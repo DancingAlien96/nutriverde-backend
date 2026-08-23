@@ -1,0 +1,34 @@
+# Reverse proxy con TLS automático (Let's Encrypt) para la API.
+#
+# El frontend (www.plenhanutrition.com) NO se sirve desde aquí: va en Vercel u
+# otro host. Este Caddyfile solo expone el backend.
+#
+# Requisitos:
+#   - api.plenhanutrition.com con registro A/AAAA apuntando a este host.
+#   - Puertos 80 y 443 alcanzables desde internet (80 es necesario para
+#     el desafío ACME y para el redirect a HTTPS).
+
+api.plenhanutrition.com {
+	encode zstd gzip
+
+	# Caddy ya añade X-Forwarded-For / X-Forwarded-Proto. El backend corre con
+	# `trust proxy = 1` para leer la IP real del cliente (la usa el rate limit
+	# del login); si algún día metes otro proxy delante, sube ese número.
+	reverse_proxy backend:4001 {
+		health_uri /api/health
+		health_interval 30s
+	}
+
+	# Las subidas grandes (comprobantes de pago, PDFs) pasan por multer con
+	# tope de MAX_UPLOAD_MB; dejamos margen por encima de ese límite.
+	request_body {
+		max_size 25MB
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}

@@ -15,7 +15,11 @@ services:
       - "3306"
     volumes:
       - nutriverde_mysql_data:/var/lib/mysql
-      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+      # OJO: ./docker/initdb NO se monta aquí a propósito. Ese script hace
+      # `GRANT ALL PRIVILEGES ON *.*` para la shadow database que Prisma usa
+      # en `migrate dev`; en prod solo corremos `migrate deploy`, que no la
+      # necesita, y ese permiso daría al usuario de la app control sobre toda
+      # la instancia MySQL (incluidas las bases de otros proyectos del host).
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -50,18 +54,53 @@ services:
       DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
       NODE_ENV: production
       PORT: 4001
-    ports:
-      - "${BACKEND_PORT:-4001}:4001"
+    # No publicamos 4001 al host: el único camino de entrada es Caddy, que
+    # termina el TLS. Publicarlo aquí dejaría la API accesible por HTTP plano.
+    expose:
+      - "4001"
     volumes:
       - nutriverde_uploads:/app/uploads
     depends_on:
       mysql:
         condition: service_healthy
-    # Aplica migraciones antes de arrancar; útil al actualizar el schema.
-    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+    # Sin `command:` a propósito. Las migraciones y el arranque viven en el CMD
+    # del Dockerfile, que usa `exec` para que tini entregue SIGTERM a node y
+    # funcione el apagado ordenado. Un override aquí volvería a romperlo.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:4001/api/health >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generoso: el contenedor corre `prisma migrate deploy` antes de escuchar.
+      start_period: 60s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nutriverde-caddy
+    restart: unless-stopped
+    # Caddy saca y renueva el certificado de Let's Encrypt solo. Requiere que
+    # api.plenhanutrition.com apunte por DNS a la IP pública de este host y que
+    # los puertos 80 y 443 estén abiertos hacia él.
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificados — NO borrar este volumen
+      - caddy_config:/config
+    depends_on:
+      - backend
 
 volumes:
   nutriverde_mysql_data:
     name: nutriverde_mysql_data
   nutriverde_uploads:
     name: nutriverde_uploads
+  caddy_data:
+    name: nutriverde_caddy_data
+  caddy_config:
+    name: nutriverde_caddy_config
