@@ -141,7 +141,7 @@ router.post("/:id/approve", async (req, res, next) => {
       return p;
     });
 
-    const scheduleUrl = `${env.FRONTEND_ORIGIN}/agendar-cita/${scheduleToken}`;
+    const scheduleUrl = `${env.PUBLIC_BASE_URL}/agendar-cita/${scheduleToken}`;
 
     void sendMail({
       to: payment.patient.email,

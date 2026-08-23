@@ -290,7 +290,7 @@ function adminNotifyHtml({
         <li><strong>Objetivo:</strong> ${escapeHtml(goal)}</li>
       </ul>
       <p>Revisa el comprobante en el panel admin para aprobar o rechazar.</p>
-      <p style="color: #6b7280; font-size: 13px;">${env.FRONTEND_ORIGIN}/admin</p>
+      <p style="color: #6b7280; font-size: 13px;">${env.PUBLIC_BASE_URL}/admin</p>
     </div>
   `;
 }

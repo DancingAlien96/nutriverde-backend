@@ -23,6 +23,15 @@ const envSchema = z.object({
         .filter(Boolean),
     ),
 
+  // URL canónica del sitio. A diferencia de FRONTEND_ORIGIN (que es una lista
+  // de orígenes permitidos para CORS y admite comodines), esta es UNA sola URL
+  // concreta y se usa para construir los enlaces que se envían por correo.
+  // Si se omite, se toma el primer origen de FRONTEND_ORIGIN.
+  PUBLIC_BASE_URL: z
+    .union([z.string().url(), z.literal("")])
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+
   // JWT para sesiones admin
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 chars"),
   JWT_EXPIRES_IN: z.string().default("7d"),
@@ -55,5 +64,19 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+// Los enlaces por correo necesitan una URL concreta: interpolar el array de
+// FRONTEND_ORIGIN produciría "https://a.com,https://b.com/agendar-cita/...".
+const publicBaseUrl = (
+  parsed.data.PUBLIC_BASE_URL ?? parsed.data.FRONTEND_ORIGIN[0]
+).replace(/\/+$/, "");
+
+if (publicBaseUrl.includes("*")) {
+  console.error(
+    "Invalid environment variables: PUBLIC_BASE_URL no puede contener comodines. " +
+      "Declárala con la URL canónica del sitio, p. ej. https://plenhanutrition.com",
+  );
+  process.exit(1);
+}
+
+export const env = { ...parsed.data, PUBLIC_BASE_URL: publicBaseUrl };
 export type Env = typeof env;
