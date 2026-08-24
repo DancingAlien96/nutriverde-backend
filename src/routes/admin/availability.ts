@@ -148,17 +148,97 @@ const blockSchema = z
     message: "startsAt debe ser anterior a endsAt",
   });
 
+/**
+ * Citas vivas que chocan con una ventana de bloqueo.
+ *
+ * Se compara el intervalo completo de la cita (inicio + duración) contra la
+ * ventana, no solo su hora de inicio: una consulta de 60 min que empieza justo
+ * antes del bloqueo también queda dentro.
+ *
+ * Solo cuentan las citas que aún van a ocurrir. Una COMPLETED o CANCELED en
+ * ese rango no es un conflicto.
+ */
+async function findConflictingAppointments(startsAt: Date, endsAt: Date) {
+  const candidates = await prisma.appointment.findMany({
+    where: {
+      scheduledAt: {
+        // Ninguna cita dura más de un día; acotamos la búsqueda con margen y
+        // filtramos el solape exacto en memoria.
+        gte: new Date(startsAt.getTime() - 24 * 60 * 60 * 1000),
+        lt: endsAt,
+      },
+      status: { in: ["PENDING_CONFIRMATION", "SCHEDULED"] },
+    },
+    orderBy: { scheduledAt: "asc" },
+    select: {
+      id: true,
+      scheduledAt: true,
+      durationMin: true,
+      status: true,
+      patient: { select: { id: true, fullName: true, email: true } },
+      service: { select: { name: true } },
+    },
+  });
+
+  return candidates.filter((a) => {
+    if (!a.scheduledAt) return false;
+    const start = a.scheduledAt.getTime();
+    const end = start + a.durationMin * 60_000;
+    return start < endsAt.getTime() && end > startsAt.getTime();
+  });
+}
+
+// Previsualiza qué citas quedarían dentro de una ventana, para que el panel
+// pueda advertir antes de crear el bloqueo.
+router.get("/blocks/conflicts", async (req, res, next) => {
+  try {
+    const { startsAt, endsAt } = z
+      .object({ startsAt: z.string().datetime(), endsAt: z.string().datetime() })
+      .parse(req.query);
+
+    const conflicts = await findConflictingAppointments(
+      new Date(startsAt),
+      new Date(endsAt),
+    );
+    res.json({ conflicts });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/blocks", async (req, res, next) => {
   try {
     const data = blockSchema.parse(req.body);
+    // Fuera del schema porque `blockSchema` lleva un .refine() y encadenar
+    // .extend() sobre un ZodEffects no es posible.
+    const acknowledgeConflicts = req.body?.acknowledgeConflicts === true;
+
+    const startsAt = new Date(data.startsAt);
+    const endsAt = new Date(data.endsAt);
+
+    // Antes se creaba el bloqueo sin mirar la agenda: las citas que caian
+    // dentro seguian vivas y nadie se enteraba. Ahora se avisa y hay que
+    // confirmar explicitamente.
+    const conflicts = await findConflictingAppointments(startsAt, endsAt);
+    if (conflicts.length > 0 && !acknowledgeConflicts) {
+      res.status(409).json({
+        error: `Hay ${conflicts.length} cita(s) agendada(s) dentro de ese rango. Revísalas antes de bloquear.`,
+        conflicts,
+      });
+      return;
+    }
+
     const block = await prisma.availabilityBlock.create({
       data: {
-        startsAt: new Date(data.startsAt),
-        endsAt: new Date(data.endsAt),
+        startsAt,
+        endsAt,
         reason: data.reason || null,
       },
     });
-    res.status(201).json({ block });
+
+    // El bloqueo impide NUEVAS reservas, pero no cancela las que ya existian:
+    // se devuelven para que el panel ofrezca reprogramar cada una.
+    res.status(201).json({ block, conflicts });
   } catch (err) {
     next(err);
   }
