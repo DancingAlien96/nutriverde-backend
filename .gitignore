@@ -10,3 +10,6 @@ uploads/*
 coverage/
 .vscode/
 .claude/
+
+# Artefactos de Playwright MCP (capturas y snapshots de depuracion)
+.playwright-mcp/

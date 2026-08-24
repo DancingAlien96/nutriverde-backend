@@ -362,6 +362,27 @@ model SchedulingSettings {
   @@map("scheduling_settings")
 }
 
+// ============================================================
+// Datos bancarios para el pago (singleton, id = "default")
+// Los edita la nutricionista desde el panel; el formulario de agendamiento
+// los lee por un endpoint publico. Antes estaban escritos a mano en el
+// frontend, asi que cambiarlos exigia redesplegar.
+// ============================================================
+model PaymentSettings {
+  id            String   @id @default("default")
+  bankName      String   @default("") // "Banrural", "BAM", ...
+  accountType   String   @default("") // "Monetaria", "Ahorro"
+  accountNumber String   @default("")
+  accountHolder String   @default("")
+  // Nota libre: SWIFT/IBAN para transferencias internacionales, horarios de
+  // acreditacion, o cualquier instruccion extra. Se muestra tal cual.
+  instructions  String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("payment_settings")
+}
+
 // Bloqueos puntuales (vacaciones, eventos)
 model AvailabilityBlock {
   id        String   @id @default(cuid())
