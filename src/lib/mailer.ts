@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "../config/env.js";
 import { prisma } from "./prisma.js";
+import { htmlToText } from "./html-to-text.js";
 
 let cachedTransporter: Transporter | null = null;
 
@@ -50,7 +51,9 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
       to: options.to,
       subject: options.subject,
       html: options.html,
-      text: options.text,
+      // Si la plantilla no trae texto propio, lo derivamos del HTML para que
+      // el correo salga siempre como multipart/alternative.
+      text: options.text ?? htmlToText(options.html),
     });
 
     await prisma.emailLog.update({
