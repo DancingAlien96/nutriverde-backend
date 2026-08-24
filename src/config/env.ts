@@ -40,6 +40,15 @@ const envSchema = z.object({
   UPLOAD_DIR: z.string().default("./uploads"),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(10),
 
+  // Proveedor de correo. "resend" usa su API HTTPS (recomendado en prod:
+  // no depende del puerto 25/587 y permite autenticar el dominio propio).
+  // "smtp" mantiene el envío por nodemailer.
+  MAIL_PROVIDER: z.enum(["smtp", "resend"]).default("smtp"),
+  RESEND_API_KEY: z
+    .string()
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+
   // SMTP (Gmail) — string vacía equivale a "no configurado"
   SMTP_HOST: z.string().default("smtp.gmail.com"),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
@@ -66,6 +75,16 @@ if (!parsed.success) {
 
 // Los enlaces por correo necesitan una URL concreta: interpolar el array de
 // FRONTEND_ORIGIN produciría "https://a.com,https://b.com/agendar-cita/...".
+// Con MAIL_PROVIDER=resend la API key es obligatoria: sin ella el envío
+// fallaría en tiempo de ejecución, cuando ya hay una paciente esperando el
+// correo. Mejor no arrancar.
+if (parsed.data.MAIL_PROVIDER === "resend" && !parsed.data.RESEND_API_KEY) {
+  console.error(
+    "Invalid environment variables: MAIL_PROVIDER=resend requiere RESEND_API_KEY.",
+  );
+  process.exit(1);
+}
+
 const publicBaseUrl = (
   parsed.data.PUBLIC_BASE_URL ?? parsed.data.FRONTEND_ORIGIN[0]
 ).replace(/\/+$/, "");

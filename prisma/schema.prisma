@@ -434,6 +434,9 @@ model EmailLog {
   template  String      // identificador de template (ej. "appointment-confirmation")
   status    EmailStatus @default(QUEUED)
   error     String?     @db.Text
+  // Id que devuelve el proveedor (Resend). Es lo que permite rastrear un
+  // correo concreto en su panel cuando hay que investigar una entrega.
+  providerMessageId String? @db.VarChar(191)
   sentAt    DateTime?
   createdAt DateTime    @default(now())
 
