@@ -7,7 +7,12 @@ import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
-import { appointmentConfirmedHtml, confirmAppointment } from "../../lib/appointments.js";
+import {
+  appointmentConfirmedHtml,
+  confirmAppointment,
+  meetingUrlSchema,
+  timezoneSchema,
+} from "../../lib/appointments.js";
 import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../lib/scheduling.js";
 
 const router = Router();
@@ -141,13 +146,10 @@ const createSchema = z.object({
     .refine(isUtf8, utf8Message("El nombre")),
   email: z.string().trim().toLowerCase().email("Correo inválido"),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
-  timezone: z.string().trim().min(1).default("America/Guatemala"),
+  timezone: timezoneSchema.default("America/Guatemala"),
   serviceId: z.string().trim().min(1, "Servicio requerido"),
   scheduledAt: z.string().datetime("Fecha y hora requeridas"),
-  meetingUrl: z
-    .string()
-    .trim()
-    .url("El link de la videollamada es obligatorio y debe ser una URL válida."),
+  meetingUrl: meetingUrlSchema,
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
   notes: z
     .string()
@@ -309,10 +311,7 @@ router.get("/:id/slots", async (req, res, next) => {
 });
 
 const confirmSchema = z.object({
-  meetingUrl: z
-    .string()
-    .trim()
-    .url("El link de la videollamada es obligatorio y debe ser una URL válida."),
+  meetingUrl: meetingUrlSchema,
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
   // Obligatorio si la cita no tiene horario propuesto; opcional para ajustar.
   scheduledAt: z.string().datetime().optional(),

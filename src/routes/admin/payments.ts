@@ -10,7 +10,7 @@ import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isValidSlot } from "../../lib/scheduling.js";
-import { confirmAppointment } from "../../lib/appointments.js";
+import { confirmAppointment, meetingUrlSchema } from "../../lib/appointments.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
 
 const router = Router();
@@ -228,7 +228,7 @@ router.post("/:id/reject", async (req, res, next) => {
 });
 
 const meetingSchema = z.object({
-  meetingUrl: z.string().trim().url().or(z.literal("")),
+  meetingUrl: meetingUrlSchema.or(z.literal("")),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
 });
 
@@ -262,7 +262,7 @@ router.post("/:id/meeting", async (req, res, next) => {
 // Confirma la cita: requiere link de videollamada OBLIGATORIO, la marca como
 // SCHEDULED y envía al paciente el correo con fecha + hora + enlace.
 const confirmSchema = z.object({
-  meetingUrl: z.string().trim().url("El link de la videollamada es obligatorio y debe ser una URL válida."),
+  meetingUrl: meetingUrlSchema,
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
   // Opcional: si la nutricionista quiere ajustar la hora propuesta.
   scheduledAt: z.string().datetime().optional(),

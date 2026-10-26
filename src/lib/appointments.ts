@@ -1,7 +1,45 @@
+import { z } from "zod";
 import { prisma } from "./prisma.js";
 import { sendMail } from "./mailer.js";
 import { isValidSlot } from "./scheduling.js";
 import { HttpError } from "../middlewares/error-handler.js";
+
+/**
+ * Link de la videollamada. Solo https: el valor se guarda y luego se
+ * renderiza como <a href> en el panel y en el correo, así que un
+ * "javascript:" o "data:" sería un XSS almacenado que cualquier cuenta
+ * del panel (incluida la secretaria) podría plantar para quien lo abra.
+ */
+export const meetingUrlSchema = z
+  .string()
+  .trim()
+  .url("El link de la videollamada es obligatorio y debe ser una URL válida.")
+  .refine(
+    (u) => {
+      try {
+        return new URL(u).protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "El link de la videollamada debe empezar con https://" },
+  );
+
+/** Zona horaria IANA válida (ej. America/Guatemala). */
+export function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const timezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(isValidTimezone, { message: "Zona horaria no válida." });
 
 /**
  * Confirmación de una cita: fija el horario, guarda el link de la

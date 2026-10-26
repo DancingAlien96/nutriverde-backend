@@ -9,8 +9,9 @@ const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? "Nutricionista";
 
 // Secretaria (opcional): solo se crea si SEED_SECRETARY_EMAIL está definido.
 // Rol SECRETARY = únicamente agendar citas y enviar el correo de confirmación.
+// Sin contraseña por defecto: si se define el correo, la clave es obligatoria.
 const SEED_SECRETARY_EMAIL = process.env.SEED_SECRETARY_EMAIL;
-const SEED_SECRETARY_PASSWORD = process.env.SEED_SECRETARY_PASSWORD ?? "Secretaria123!";
+const SEED_SECRETARY_PASSWORD = process.env.SEED_SECRETARY_PASSWORD;
 const SEED_SECRETARY_NAME = process.env.SEED_SECRETARY_NAME ?? "Secretaria";
 
 async function seedServices() {
@@ -109,6 +110,11 @@ async function seedAdmin() {
 
 async function seedSecretary() {
   if (!SEED_SECRETARY_EMAIL) return;
+  if (!SEED_SECRETARY_PASSWORD || SEED_SECRETARY_PASSWORD.length < 10) {
+    throw new Error(
+      "SEED_SECRETARY_EMAIL está definido pero falta SEED_SECRETARY_PASSWORD (mínimo 10 caracteres).",
+    );
+  }
 
   const existing = await prisma.adminUser.findUnique({
     where: { email: SEED_SECRETARY_EMAIL },

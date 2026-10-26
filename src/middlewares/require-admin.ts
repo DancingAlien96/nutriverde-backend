@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import type { AdminRole } from "@prisma/client";
 import { env } from "../config/env.js";
+import { prisma } from "../lib/prisma.js";
 import { HttpError } from "./error-handler.js";
 
 export interface AdminTokenPayload {
@@ -25,6 +26,12 @@ export function signAdminToken(payload: AdminTokenPayload): string {
   });
 }
 
+/**
+ * Autentica al admin por JWT y refresca rol + estado activo desde la base
+ * de datos. El token lleva el rol como pista, pero la autorización se hace
+ * con el valor actual: si se desactiva una cuenta o se le cambia el rol,
+ * aplica en la siguiente petición y no al vencer el token.
+ */
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
   const header = req.header("authorization");
   if (!header || !header.startsWith("Bearer ")) {
@@ -33,13 +40,26 @@ export function requireAdmin(req: Request, _res: Response, next: NextFunction): 
 
   const token = header.slice("Bearer ".length).trim();
 
+  let payload: AdminTokenPayload;
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as AdminTokenPayload;
-    req.admin = payload;
-    next();
+    payload = jwt.verify(token, env.JWT_SECRET) as AdminTokenPayload;
   } catch {
-    next(new HttpError(401, "Token inválido o expirado."));
+    return next(new HttpError(401, "Token inválido o expirado."));
   }
+
+  prisma.adminUser
+    .findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, role: true, active: true },
+    })
+    .then((admin) => {
+      if (!admin || !admin.active) {
+        return next(new HttpError(401, "Cuenta no disponible."));
+      }
+      req.admin = { sub: admin.id, email: admin.email, role: admin.role };
+      next();
+    })
+    .catch(next);
 }
 
 /**
