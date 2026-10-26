@@ -91,6 +91,7 @@ const updateSchema = z
       .max(120)
       .refine(isUtf8, utf8Message("El nombre"))
       .optional(),
+    email: z.string().trim().toLowerCase().email("Correo inválido").optional(),
     role: z.enum(ROLES).optional(),
     locale: z.enum(LOCALES).optional(),
     active: z.boolean().optional(),
@@ -99,7 +100,7 @@ const updateSchema = z
   .refine((d) => Object.keys(d).length > 0, { message: "Nada que actualizar." });
 
 /**
- * Edita nombre, rol, estado o contraseña. Dos candados para no dejar el
+ * Edita nombre, correo, rol, idioma, estado o contraseña. Dos candados para no dejar el
  * panel sin dueña: nadie puede desactivarse ni quitarse el rol a sí misma,
  * y siempre debe quedar al menos una nutricionista activa.
  */
@@ -127,10 +128,16 @@ router.patch("/:id", async (req, res, next) => {
       }
     }
 
+    if (patch.email !== undefined && patch.email !== target.email) {
+      const taken = await prisma.adminUser.findUnique({ where: { email: patch.email } });
+      if (taken) throw new HttpError(409, "Ya existe un usuario con ese correo.");
+    }
+
     const user = await prisma.adminUser.update({
       where: { id: target.id },
       data: {
         ...(patch.fullName !== undefined ? { fullName: patch.fullName } : {}),
+        ...(patch.email !== undefined ? { email: patch.email } : {}),
         ...(patch.role !== undefined ? { role: patch.role } : {}),
         ...(patch.locale !== undefined ? { locale: patch.locale } : {}),
         ...(patch.active !== undefined ? { active: patch.active } : {}),
