@@ -124,12 +124,30 @@ router.post("/:id/approve", async (req, res, next) => {
         },
       });
 
+      // Programa de varias citas: al aprobar el pago nace el paquete y la
+      // primera cita queda ligada a él. Idempotente por paymentId.
+      let packageId: string | null = null;
+      if (payment.service.sessions > 1) {
+        const pkg = await tx.sessionPackage.upsert({
+          where: { paymentId: payment.id },
+          update: {},
+          create: {
+            patientId: payment.patientId,
+            serviceId: payment.serviceId,
+            paymentId: payment.id,
+            totalSessions: payment.service.sessions,
+          },
+        });
+        packageId = pkg.id;
+      }
+
       if (payment.appointmentId) {
         await tx.appointment.update({
           where: { id: payment.appointmentId },
           data: {
             status: finalStatus,
             scheduleToken,
+            ...(packageId ? { packageId } : {}),
             // Si el slot tentativo ya no es válido, lo limpiamos para que el
             // paciente elija uno nuevo desde el link de scheduling.
             ...(payment.appointment?.scheduledAt && !slotStillValid

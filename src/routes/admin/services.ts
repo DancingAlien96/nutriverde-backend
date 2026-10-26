@@ -54,6 +54,8 @@ const createSchema = z.object({
   priceUsdCents: z.number().int().min(0).nullable().optional(),
   currency: z.string().trim().length(3).default("GTQ"),
   durationMin: z.number().int().min(0).max(8 * 60),
+  // Consultas incluidas: 1 = cita suelta, 4/6 = programa.
+  sessions: z.number().int().min(1).max(50).default(1),
   billingType: z.enum(["ONE_TIME", "MONTHLY"]).default("ONE_TIME"),
   active: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),

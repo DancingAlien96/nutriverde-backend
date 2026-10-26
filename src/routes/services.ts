@@ -29,6 +29,7 @@ router.get("/", async (_req, res, next) => {
         priceUsdCents: true,
         currency: true,
         durationMin: true,
+        sessions: true,
         billingType: true,
       },
     });

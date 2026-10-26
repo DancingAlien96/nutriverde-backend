@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
+import { packagesForPatient } from "../../lib/packages.js";
 import { buildExpedientePdf } from "../../lib/expediente-pdf.js";
 import {
   DOCUMENT_TYPES,
@@ -75,6 +76,7 @@ router.get("/:id", async (req, res, next) => {
           orderBy: { createdAt: "desc" },
           include: {
             service: { select: { id: true, name: true, slug: true } },
+            package: { select: { id: true, totalSessions: true } },
             payment: {
               select: {
                 id: true,
@@ -145,7 +147,10 @@ router.get("/:id", async (req, res, next) => {
         .reduce((sum, p) => sum + p.amountCents, 0),
     };
 
-    res.json({ patient, stats });
+    // Paquetes de sesiones con su uso (para el bloque del expediente).
+    const packages = await packagesForPatient(patient.id);
+
+    res.json({ patient: { ...patient, packages }, stats });
   } catch (err) {
     next(err);
   }

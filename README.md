@@ -114,7 +114,8 @@ prisma/
 - **Service** — Consulta Inicial (Q350), Seguimiento (Q250), Plan Premium (Q550)
 - **IntakeForm** — formulario inicial con objetivos/historial
 - **Payment** — comprobante subido manualmente, aprobación manual
-- **Appointment** — cita con link de Google Meet/Zoom
+- **Appointment** — cita con link de Google Meet/Zoom (opcionalmente ligada a un paquete)
+- **SessionPackage** — programa de N citas pagado de una vez (servicio con `sessions` > 1). Nace al aprobar el pago; cada cita agendada descuenta una sesión y una cancelada la devuelve. La agenda avisa al agotarse.
 - **AvailabilitySlot** / **AvailabilityBlock** — disponibilidad de la nutricionista
 - **NutritionPlan** — PDF del plan enviado tras la consulta
 - **EmailLog** — auditoría de correos enviados

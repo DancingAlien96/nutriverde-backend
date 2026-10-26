@@ -112,6 +112,7 @@ model Patient {
   trainings       PatientTraining[]
   measurements    AnthropometricMeasurement[]
   mealPlans       MealPlan[]
+  packages        SessionPackage[]
 
   @@index([email])
   @@map("patients")
@@ -231,6 +232,10 @@ model Service {
   priceUsdCents Int?               // precio internacional en centavos USD (US$69 -> 6900)
   currency    String   @default("GTQ")
   durationMin Int                  // duración en minutos (0 si es mensual)
+  // Consultas incluidas. 1 = cita suelta; 4 o 6 = programa/paquete. Al
+  // aprobar el pago de un servicio con sessions > 1 se crea un
+  // SessionPackage del que se van descontando las citas.
+  sessions    Int      @default(1)
   billingType BillingType @default(ONE_TIME)
   active      Boolean  @default(true)
   sortOrder   Int      @default(0)
@@ -239,6 +244,7 @@ model Service {
 
   appointments Appointment[]
   payments     Payment[]
+  packages     SessionPackage[]
 
   @@map("services")
 }
@@ -288,6 +294,7 @@ model Payment {
   service     Service      @relation(fields: [serviceId], references: [id])
   appointment Appointment? @relation(fields: [appointmentId], references: [id])
   approvedBy  AdminUser?   @relation("PaymentApprover", fields: [approvedById], references: [id])
+  package     SessionPackage?
 
   @@index([patientId])
   @@index([status])
@@ -317,6 +324,9 @@ model Appointment {
   meetingId      String?
   remindersSent  Int               @default(0)
   notes          String?           @db.Text
+  // Paquete del que descuenta esta cita (null = cita suelta o anterior a
+  // los paquetes). Una cita CANCELED no consume sesión.
+  packageId      String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -324,11 +334,37 @@ model Appointment {
   service        Service         @relation(fields: [serviceId], references: [id])
   payment        Payment?
   nutritionPlan  NutritionPlan?
+  package        SessionPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
 
   @@index([patientId])
   @@index([scheduledAt])
   @@index([status])
+  @@index([packageId])
   @@map("appointments")
+}
+
+// ============================================================
+// Paquetes de sesiones (programa de 4 o 6 citas pagado de una vez)
+// Las sesiones usadas no se guardan: se cuentan las citas ligadas que no
+// estén canceladas, así cancelar devuelve la sesión automáticamente.
+// ============================================================
+model SessionPackage {
+  id            String   @id @default(cuid())
+  patientId     String
+  serviceId     String
+  paymentId     String?  @unique  // pago que lo originó (null si se creó a mano)
+  totalSessions Int
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  service      Service       @relation(fields: [serviceId], references: [id])
+  payment      Payment?      @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  appointments Appointment[]
+
+  @@index([patientId])
+  @@map("session_packages")
 }
 
 enum AppointmentStatus {

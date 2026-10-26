@@ -16,6 +16,7 @@ import {
   timezoneSchema,
 } from "../../lib/appointments.js";
 import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../lib/scheduling.js";
+import { packageInfoForAppointments, packagesForPatient } from "../../lib/packages.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -53,6 +54,7 @@ router.get("/", async (req, res, next) => {
         meetingUrl: true,
         meetingProvider: true,
         notes: true,
+        packageId: true,
         patient: {
           select: { id: true, fullName: true, email: true, phone: true },
         },
@@ -70,10 +72,13 @@ router.get("/", async (req, res, next) => {
       },
     });
 
+    const pkgInfo = await packageInfoForAppointments(appointments);
+
     res.json({
       appointments: appointments.map((a) => ({
         ...a,
         payment: "payment" in a ? a.payment : null,
+        package: pkgInfo.get(a.id) ?? null,
       })),
     });
   } catch (err) {
@@ -102,6 +107,7 @@ router.get("/pending", async (_req, res, next) => {
         meetingUrl: true,
         meetingProvider: true,
         updatedAt: true,
+        package: { select: { id: true, totalSessions: true } },
         patient: {
           select: {
             id: true,
@@ -133,7 +139,10 @@ router.get("/patient-lookup", async (req, res, next) => {
       where: { email },
       select: { id: true, fullName: true, email: true, phone: true, timezone: true },
     });
-    res.json({ patient });
+    // Paquetes con sesiones restantes: la secretaria ve de un vistazo si la
+    // cita descuenta de un programa pagado o si hay que cobrar.
+    const packages = patient ? await packagesForPatient(patient.id) : [];
+    res.json({ patient, packages });
   } catch (err) {
     next(err);
   }
@@ -150,6 +159,8 @@ const createSchema = z.object({
   phone: z.string().trim().max(30).optional().or(z.literal("")),
   timezone: timezoneSchema.default("America/Guatemala"),
   serviceId: z.string().trim().min(1, "Servicio requerido"),
+  // Paquete del que descuenta la cita. Si viene, manda sobre serviceId.
+  packageId: z.string().trim().min(1).optional(),
   scheduledAt: z.string().datetime("Fecha y hora requeridas"),
   meetingUrl: meetingUrlSchema,
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
@@ -176,8 +187,34 @@ router.post("/", async (req, res, next) => {
   try {
     const input = createSchema.parse(req.body);
 
-    const service = await prisma.service.findUnique({ where: { id: input.serviceId } });
-    if (!service || !service.active) {
+    // Si la cita descuenta de un paquete, validamos que exista, que sea de
+    // esta paciente y que le queden sesiones. El servicio es el del paquete.
+    let pkg: { id: string; serviceId: string; patientEmail: string } | null = null;
+    if (input.packageId) {
+      const found = await prisma.sessionPackage.findUnique({
+        where: { id: input.packageId },
+        include: {
+          patient: { select: { email: true } },
+          appointments: { where: { status: { not: "CANCELED" } }, select: { id: true } },
+        },
+      });
+      if (!found) throw new HttpError(404, "Paquete no encontrado.");
+      if (found.patient.email !== input.email) {
+        throw new HttpError(400, "Ese paquete pertenece a otra paciente.");
+      }
+      if (found.appointments.length >= found.totalSessions) {
+        throw new HttpError(
+          409,
+          "Este paquete ya no tiene sesiones disponibles. La paciente debe renovar o pagar una cita individual.",
+        );
+      }
+      pkg = { id: found.id, serviceId: found.serviceId, patientEmail: found.patient.email };
+    }
+
+    const service = await prisma.service.findUnique({
+      where: { id: pkg ? pkg.serviceId : input.serviceId },
+    });
+    if (!service || (!pkg && !service.active)) {
       throw new HttpError(400, "Servicio no disponible.");
     }
     // Los servicios mensuales tienen durationMin 0; para bloquear agenda
@@ -226,6 +263,7 @@ router.post("/", async (req, res, next) => {
           meetingUrl: input.meetingUrl,
           meetingProvider: input.meetingProvider ?? "GOOGLE_MEET",
           notes,
+          packageId: pkg?.id ?? null,
         },
       });
 
