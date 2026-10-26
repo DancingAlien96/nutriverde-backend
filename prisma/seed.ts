@@ -60,6 +60,43 @@ async function seedServices() {
       billingType: "ONE_TIME" as const,
       sortOrder: 4,
     },
+    // Modelo por paquetes (precios del cliente, octubre 2026). Las citas de
+    // un programa se van descontando de un SessionPackage al agendarlas.
+    {
+      slug: "cita-individual",
+      name: "Cita individual",
+      description: "Una consulta nutricional en línea de 60 minutos.",
+      priceCents: 40000, // Q400.00
+      currency: "GTQ",
+      durationMin: 60,
+      sessions: 1,
+      billingType: "ONE_TIME" as const,
+      sortOrder: 10,
+    },
+    {
+      slug: "programa-4-citas",
+      name: "Programa 4 citas",
+      description:
+        "Programa de acompañamiento con 4 consultas en línea. Se paga una sola vez y las citas se van agendando.",
+      priceCents: 140000, // Q1,400.00
+      currency: "GTQ",
+      durationMin: 60,
+      sessions: 4,
+      billingType: "ONE_TIME" as const,
+      sortOrder: 11,
+    },
+    {
+      slug: "programa-6-citas",
+      name: "Programa 6 citas",
+      description:
+        "Programa de acompañamiento con 6 consultas en línea. Se paga una sola vez y las citas se van agendando.",
+      priceCents: 195000, // Q1,950.00
+      currency: "GTQ",
+      durationMin: 60,
+      sessions: 6,
+      billingType: "ONE_TIME" as const,
+      sortOrder: 12,
+    },
   ];
 
   for (const s of services) {
