@@ -60,6 +60,7 @@ router.post("/login", loginLimiter, async (req, res, next) => {
         email: admin.email,
         fullName: admin.fullName,
         role: admin.role,
+        locale: admin.locale,
       },
     });
   } catch (err) {
@@ -71,7 +72,7 @@ router.get("/me", requireAdmin, async (req, res, next) => {
   try {
     const admin = await prisma.adminUser.findUnique({
       where: { id: req.admin!.sub },
-      select: { id: true, email: true, fullName: true, role: true, active: true },
+      select: { id: true, email: true, fullName: true, role: true, locale: true, active: true },
     });
 
     if (!admin || !admin.active) {
