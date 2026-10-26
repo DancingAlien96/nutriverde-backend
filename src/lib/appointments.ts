@@ -173,3 +173,80 @@ export function appointmentConfirmedHtml(opts: {
     </div>
   `;
 }
+
+/** Correo de cancelación: fecha tachada, motivo opcional, invitación a reagendar. */
+export function appointmentCanceledHtml(opts: {
+  name: string;
+  service: string;
+  when: Date;
+  patientTimezone: string;
+  reason: string | null;
+}): string {
+  const localTime = opts.when.toLocaleString("es-GT", {
+    timeZone: opts.patientTimezone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <h1 style="color: #687445; font-size: 22px;">Hola ${escapeHtml(opts.name)},</h1>
+      <p>Tu cita de <strong>${escapeHtml(opts.service)}</strong> quedó cancelada:</p>
+      <p style="background: #f3f4f6; border-radius: 8px; padding: 12px 16px; color: #6b7280; text-decoration: line-through;">${escapeHtml(localTime)}</p>
+      ${opts.reason ? `<p><strong>Motivo:</strong> ${escapeHtml(opts.reason)}</p>` : ""}
+      <p>Si quieres reprogramarla, responde este correo o escríbenos y te buscamos un nuevo horario.</p>
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    </div>
+  `;
+}
+
+/** Correo de reprogramación: fecha anterior tachada, nueva fecha y enlace. */
+export function appointmentRescheduledHtml(opts: {
+  name: string;
+  service: string;
+  previous: Date | null;
+  when: Date;
+  durationMin: number;
+  patientTimezone: string;
+  meetingUrl: string | null;
+}): string {
+  const fmt = (d: Date, tz: string) =>
+    d.toLocaleString("es-GT", {
+      timeZone: tz,
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const sameTz = opts.patientTimezone === "America/Guatemala";
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <h1 style="color: #687445; font-size: 22px;">Tu cita cambió de horario, ${escapeHtml(opts.name)}</h1>
+      <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
+      ${
+        opts.previous
+          ? `<p style="color: #6b7280; text-decoration: line-through;">${escapeHtml(fmt(opts.previous, "America/Guatemala"))}</p>`
+          : ""
+      }
+      <p><strong>Nueva fecha y hora (Guatemala):</strong> ${escapeHtml(fmt(opts.when, "America/Guatemala"))}</p>
+      ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(fmt(opts.when, opts.patientTimezone))}</p>`}
+      ${
+        opts.meetingUrl
+          ? `<p style="margin: 24px 0;">
+        <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
+          Unirme a la videollamada
+        </a>
+      </p>
+      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
+          : `<p>Te enviaremos el enlace de la videollamada antes de la cita.</p>`
+      }
+      <p style="margin-top: 24px;">Si el nuevo horario no te funciona, responde a este correo.</p>
+      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    </div>
+  `;
+}

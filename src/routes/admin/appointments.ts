@@ -8,7 +8,9 @@ import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
 import {
+  appointmentCanceledHtml,
   appointmentConfirmedHtml,
+  appointmentRescheduledHtml,
   confirmAppointment,
   meetingUrlSchema,
   timezoneSchema,
@@ -423,6 +425,126 @@ router.post("/:id/decline-time", async (req, res, next) => {
         scheduleUrl: `${env.PUBLIC_BASE_URL}/agendar-cita/${scheduleToken}`,
       }),
     }).catch((err) => console.error("Email de reprogramación falló:", err));
+
+    res.json({ ok: true, appointment: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const cancelSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .max(500)
+    .refine(isUtf8, utf8Message("El motivo"))
+    .optional()
+    .or(z.literal("")),
+});
+
+/**
+ * Cancela una cita con horario. Conserva la fecha para que quede en el
+ * calendario tachada (historial), pero el slot queda libre porque la
+ * disponibilidad solo cuenta SCHEDULED/COMPLETED. No toca el pago: si la
+ * paciente quiere otra fecha, se usa "reprogramar" sobre esta misma cita.
+ */
+router.post("/:id/cancel", async (req, res, next) => {
+  try {
+    const { reason } = cancelSchema.parse(req.body);
+
+    const appt = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      include: { patient: true, service: true },
+    });
+    if (!appt) throw new HttpError(404, "Cita no encontrada.");
+    if (!appt.scheduledAt) {
+      throw new HttpError(409, "Esta cita no tiene horario; no hay nada que cancelar.");
+    }
+    if (appt.status !== "SCHEDULED" && appt.status !== "PENDING_CONFIRMATION") {
+      throw new HttpError(409, "Solo se puede cancelar una cita confirmada o propuesta.");
+    }
+
+    const updated = await prisma.appointment.update({
+      where: { id: appt.id },
+      data: { status: "CANCELED" },
+    });
+
+    void sendMail({
+      to: appt.patient.email,
+      subject: "Tu cita fue cancelada — Plenha Nutrition",
+      template: "appointment-canceled",
+      html: appointmentCanceledHtml({
+        name: appt.patient.fullName,
+        service: appt.service.name,
+        when: appt.scheduledAt,
+        patientTimezone: appt.patient.timezone,
+        reason: reason || null,
+      }),
+    }).catch((err) => console.error("Email cancelación falló:", err));
+
+    res.json({ ok: true, appointment: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const rescheduleSchema = z.object({
+  scheduledAt: z.string().datetime("Fecha y hora requeridas"),
+  // Opcional: si cambia el enlace. Si no viene, se conserva el que había.
+  meetingUrl: meetingUrlSchema.optional(),
+  meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+});
+
+/**
+ * Mueve una cita a otro horario y avisa a la paciente. Sirve tanto para una
+ * cita confirmada como para reactivar una cancelada (vuelve a SCHEDULED sin
+ * nuevo pago), que es el caso "la paciente canceló y luego quiere otra fecha".
+ */
+router.post("/:id/reschedule", async (req, res, next) => {
+  try {
+    const { scheduledAt, meetingUrl, meetingProvider } = rescheduleSchema.parse(req.body);
+
+    const appt = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      include: { patient: true, service: true, payment: true },
+    });
+    if (!appt) throw new HttpError(404, "Cita no encontrada.");
+    if (appt.status !== "SCHEDULED" && appt.status !== "CANCELED") {
+      throw new HttpError(409, "Solo se puede reprogramar una cita confirmada o cancelada.");
+    }
+    if (appt.payment && appt.payment.status !== "APPROVED") {
+      throw new HttpError(409, "El pago de esta cita no está aprobado.");
+    }
+
+    const when = new Date(scheduledAt);
+    const ok = await isValidSlot(when, appt.durationMin, appt.id);
+    if (!ok) throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
+
+    const finalUrl = meetingUrl ?? appt.meetingUrl;
+    const updated = await prisma.appointment.update({
+      where: { id: appt.id },
+      data: {
+        scheduledAt: when,
+        status: "SCHEDULED",
+        meetingUrl: finalUrl,
+        meetingProvider: finalUrl ? meetingProvider ?? appt.meetingProvider ?? "GOOGLE_MEET" : null,
+      },
+    });
+
+    void sendMail({
+      to: appt.patient.email,
+      subject: "Tu cita cambió de horario — Plenha Nutrition",
+      template: "appointment-rescheduled",
+      html: appointmentRescheduledHtml({
+        name: appt.patient.fullName,
+        service: appt.service.name,
+        previous: appt.status === "SCHEDULED" ? appt.scheduledAt : null,
+        when,
+        durationMin: appt.durationMin,
+        patientTimezone: appt.patient.timezone,
+        meetingUrl: finalUrl,
+      }),
+    }).catch((err) => console.error("Email reprogramación falló:", err));
 
     res.json({ ok: true, appointment: updated });
   } catch (err) {
