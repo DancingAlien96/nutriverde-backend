@@ -189,7 +189,7 @@ router.post("/", async (req, res, next) => {
 
     // Si la cita descuenta de un paquete, validamos que exista, que sea de
     // esta paciente y que le queden sesiones. El servicio es el del paquete.
-    let pkg: { id: string; serviceId: string; patientEmail: string } | null = null;
+    let pkg: { id: string; serviceId: string; patientEmail: string; totalSessions: number } | null = null;
     if (input.packageId) {
       const found = await prisma.sessionPackage.findUnique({
         where: { id: input.packageId },
@@ -208,7 +208,12 @@ router.post("/", async (req, res, next) => {
           "Este paquete ya no tiene sesiones disponibles. La paciente debe renovar o pagar una cita individual.",
         );
       }
-      pkg = { id: found.id, serviceId: found.serviceId, patientEmail: found.patient.email };
+      pkg = {
+        id: found.id,
+        serviceId: found.serviceId,
+        patientEmail: found.patient.email,
+        totalSessions: found.totalSessions,
+      };
     }
 
     const service = await prisma.service.findUnique({
@@ -232,6 +237,23 @@ router.post("/", async (req, res, next) => {
     const notes = input.notes ? `${stamp}\n${input.notes}` : stamp;
 
     const { patient, appointment, existed } = await prisma.$transaction(async (tx) => {
+      // Recuento definitivo dentro de la transacción, con la fila del paquete
+      // bloqueada: dos peticiones casi simultáneas no pueden descontar la
+      // misma última sesión (la comprobación de arriba es solo para dar un
+      // mensaje temprano).
+      if (pkg) {
+        await tx.$queryRaw`SELECT id FROM session_packages WHERE id = ${pkg.id} FOR UPDATE`;
+        const used = await tx.appointment.count({
+          where: { packageId: pkg.id, status: { not: "CANCELED" } },
+        });
+        if (used >= pkg.totalSessions) {
+          throw new HttpError(
+            409,
+            "Este paquete ya no tiene sesiones disponibles. La paciente debe renovar o pagar una cita individual.",
+          );
+        }
+      }
+
       const existing = await tx.patient.findUnique({ where: { email: input.email } });
 
       // Si ya existe, no pisamos su nombre: solo completamos lo que falte.
