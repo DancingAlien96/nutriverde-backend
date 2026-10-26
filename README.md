@@ -106,7 +106,9 @@ prisma/
 
 ## Modelo de datos (resumen)
 
-- **AdminUser** — la nutricionista (y posible staff)
+- **AdminUser** — usuarios del panel. Roles:
+  - `NUTRITIONIST` / `STAFF` — acceso completo (pagos, pacientes, expedientes, disponibilidad, servicios).
+  - `SECRETARY` — solo agenda: ve el calendario, confirma horario + link de videollamada y envía el correo de cita. Todo lo demás responde 403 y el panel solo le muestra "Appointments".
 - **Patient** — pacientes referidos
 - **Service** — Consulta Inicial (Q350), Seguimiento (Q250), Plan Premium (Q550)
 - **IntakeForm** — formulario inicial con objetivos/historial

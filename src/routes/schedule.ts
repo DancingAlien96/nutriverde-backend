@@ -134,12 +134,13 @@ router.post("/:token/confirm", async (req, res, next) => {
       }),
     }).catch((err) => console.error("Email propuesta falló:", err));
 
-    // Notificación a la nutricionista para que confirme.
-    const admin = await prisma.adminUser.findFirst({
-      where: { active: true, role: "NUTRITIONIST" },
+    // Notificación a quien confirma citas: la nutricionista y, si existe,
+    // la secretaria (que es quien agenda en el día a día).
+    const staff = await prisma.adminUser.findMany({
+      where: { active: true, role: { in: ["NUTRITIONIST", "SECRETARY"] } },
       select: { email: true },
     });
-    if (admin) {
+    for (const admin of staff) {
       void sendMail({
         to: admin.email,
         subject: `Horario propuesto: ${appt.patient.fullName}`,

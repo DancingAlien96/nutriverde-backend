@@ -7,16 +7,24 @@ import servicesRouter from "./services.js";
 import patientsRouter from "./patients.js";
 import remindersRouter from "./reminders.js";
 import appointmentsRouter from "./appointments.js";
+import { requireFullAccess } from "../../middlewares/require-admin.js";
 
 const router = Router();
 
+// Login y /me: cualquier rol.
 router.use("/auth", authRouter);
-router.use("/payments", paymentsRouter);
-router.use("/payment-settings", paymentSettingsRouter);
-router.use("/availability", availabilityRouter);
-router.use("/services", servicesRouter);
-router.use("/patients", patientsRouter);
-router.use("/reminders", remindersRouter);
+
+// Agenda: cualquier rol autenticado. La secretaria solo tiene esto.
+// (Dentro del router se recorta lo que ve según el rol.)
 router.use("/appointments", appointmentsRouter);
+
+// Todo lo demás es exclusivo de la nutricionista (y staff): pagos, datos
+// bancarios, disponibilidad, servicios, pacientes/expedientes y recordatorios.
+router.use("/payments", requireFullAccess, paymentsRouter);
+router.use("/payment-settings", requireFullAccess, paymentSettingsRouter);
+router.use("/availability", requireFullAccess, availabilityRouter);
+router.use("/services", requireFullAccess, servicesRouter);
+router.use("/patients", requireFullAccess, patientsRouter);
+router.use("/reminders", requireFullAccess, remindersRouter);
 
 export default router;

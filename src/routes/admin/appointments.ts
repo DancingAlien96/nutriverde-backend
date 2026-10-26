@@ -7,6 +7,8 @@ import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
+import { appointmentConfirmedHtml, confirmAppointment } from "../../lib/appointments.js";
+import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../lib/scheduling.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -18,9 +20,11 @@ const querySchema = z.object({
 
 // Lista las citas con horario asignado (para el calendario del admin).
 // Opcionalmente filtra por rango [from, to].
+// La secretaria no ve datos de pago: solo paciente, servicio y horario.
 router.get("/", async (req, res, next) => {
   try {
     const { from, to } = querySchema.parse(req.query);
+    const showPayment = req.admin!.role !== "SECRETARY";
 
     const scheduledAt: {
       not: null;
@@ -46,14 +50,61 @@ router.get("/", async (req, res, next) => {
           select: { id: true, fullName: true, email: true, phone: true },
         },
         service: { select: { id: true, name: true } },
-        payment: {
+        payment: showPayment
+          ? {
+              select: {
+                id: true,
+                status: true,
+                amountCents: true,
+                currency: true,
+              },
+            }
+          : false,
+      },
+    });
+
+    res.json({
+      appointments: appointments.map((a) => ({
+        ...a,
+        payment: "payment" in a ? a.payment : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Citas con pago aprobado que todavía no están agendadas: o la paciente aún
+ * no eligió horario (PAYMENT_APPROVED) o propuso uno y falta confirmarlo con
+ * el link de la videollamada (PENDING_CONFIRMATION). Es la "bandeja" de la
+ * secretaria.
+ */
+router.get("/pending", async (_req, res, next) => {
+  try {
+    const appointments = await prisma.appointment.findMany({
+      where: { status: { in: ["PAYMENT_APPROVED", "PENDING_CONFIRMATION"] } },
+      orderBy: [{ scheduledAt: "asc" }, { updatedAt: "asc" }],
+      select: {
+        id: true,
+        status: true,
+        scheduledAt: true,
+        durationMin: true,
+        timezone: true,
+        scheduleToken: true,
+        meetingUrl: true,
+        meetingProvider: true,
+        updatedAt: true,
+        patient: {
           select: {
             id: true,
-            status: true,
-            amountCents: true,
-            currency: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            timezone: true,
           },
         },
+        service: { select: { id: true, name: true, durationMin: true } },
       },
     });
 
@@ -63,6 +114,232 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+/**
+ * Busca una paciente por correo para la cita manual. Devuelve solo lo que la
+ * secretaria necesita para no duplicarla (nombre, teléfono, zona horaria);
+ * nada clínico.
+ */
+router.get("/patient-lookup", async (req, res, next) => {
+  try {
+    const email = z.string().trim().toLowerCase().email().parse(req.query.email);
+    const patient = await prisma.patient.findUnique({
+      where: { email },
+      select: { id: true, fullName: true, email: true, phone: true, timezone: true },
+    });
+    res.json({ patient });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const createSchema = z.object({
+  fullName: z
+    .string()
+    .trim()
+    .min(2, "Nombre demasiado corto")
+    .max(120)
+    .refine(isUtf8, utf8Message("El nombre")),
+  email: z.string().trim().toLowerCase().email("Correo inválido"),
+  phone: z.string().trim().max(30).optional().or(z.literal("")),
+  timezone: z.string().trim().min(1).default("America/Guatemala"),
+  serviceId: z.string().trim().min(1, "Servicio requerido"),
+  scheduledAt: z.string().datetime("Fecha y hora requeridas"),
+  meetingUrl: z
+    .string()
+    .trim()
+    .url("El link de la videollamada es obligatorio y debe ser una URL válida."),
+  meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+  notes: z
+    .string()
+    .trim()
+    .max(1000)
+    .refine(isUtf8, utf8Message("Las notas"))
+    .optional()
+    .or(z.literal("")),
+});
+
+/**
+ * Cita desde cero (sin pasar por el formulario público ni por un pago):
+ * la secretaria registra a la paciente (o reutiliza la existente por
+ * correo), elige servicio + horario, pega el link y la cita nace ya
+ * SCHEDULED. La paciente recibe el mismo correo de confirmación.
+ *
+ * No se crea registro de pago: el cobro de estas citas se maneja fuera del
+ * sistema (o la nutricionista lo registra después). Queda anotado en `notes`
+ * quién la creó para poder rastrearla.
+ */
+router.post("/", async (req, res, next) => {
+  try {
+    const input = createSchema.parse(req.body);
+
+    const service = await prisma.service.findUnique({ where: { id: input.serviceId } });
+    if (!service || !service.active) {
+      throw new HttpError(400, "Servicio no disponible.");
+    }
+    // Los servicios mensuales tienen durationMin 0; para bloquear agenda
+    // usamos una hora por defecto.
+    const durationMin = service.durationMin > 0 ? service.durationMin : 60;
+
+    const scheduledAt = new Date(input.scheduledAt);
+    const ok = await isValidSlot(scheduledAt, durationMin);
+    if (!ok) {
+      throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
+    }
+
+    const createdBy = req.admin!.email;
+    const stamp = `Agendada manualmente desde el panel por ${createdBy}.`;
+    const notes = input.notes ? `${stamp}\n${input.notes}` : stamp;
+
+    const { patient, appointment, existed } = await prisma.$transaction(async (tx) => {
+      const existing = await tx.patient.findUnique({ where: { email: input.email } });
+
+      // Si ya existe, no pisamos su nombre: solo completamos lo que falte.
+      const patient = existing
+        ? await tx.patient.update({
+            where: { id: existing.id },
+            data: {
+              phone: existing.phone ?? (input.phone || null),
+              timezone: existing.timezone || input.timezone,
+            },
+          })
+        : await tx.patient.create({
+            data: {
+              fullName: input.fullName,
+              email: input.email,
+              phone: input.phone || null,
+              timezone: input.timezone,
+            },
+          });
+
+      const appointment = await tx.appointment.create({
+        data: {
+          patientId: patient.id,
+          serviceId: service.id,
+          durationMin,
+          timezone: patient.timezone,
+          scheduledAt,
+          status: "SCHEDULED",
+          meetingUrl: input.meetingUrl,
+          meetingProvider: input.meetingProvider ?? "GOOGLE_MEET",
+          notes,
+        },
+      });
+
+      return { patient, appointment, existed: !!existing };
+    });
+
+    void sendMail({
+      to: patient.email,
+      subject: "Cita confirmada — Plenha Nutrition",
+      template: "appointment-confirmed",
+      html: appointmentConfirmedHtml({
+        name: patient.fullName,
+        service: service.name,
+        when: scheduledAt,
+        durationMin,
+        patientTimezone: patient.timezone,
+        meetingUrl: input.meetingUrl,
+      }),
+    }).catch((err) => console.error("Email confirmación (manual) falló:", err));
+
+    res.status(201).json({
+      ok: true,
+      appointment,
+      patient: {
+        id: patient.id,
+        fullName: patient.fullName,
+        email: patient.email,
+        existed,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function loadSchedulable(id: string) {
+  const appt = await prisma.appointment.findUnique({
+    where: { id },
+    select: { id: true, durationMin: true, status: true },
+  });
+  if (!appt) throw new HttpError(404, "Cita no encontrada.");
+  return appt;
+}
+
+// Disponibilidad por día de un mes para esta cita (excluyéndola a sí misma,
+// por si ya tiene un horario propuesto que ocupa su propio hueco).
+router.get("/:id/availability", async (req, res, next) => {
+  try {
+    const appt = await loadSchedulable(req.params.id);
+    const month = z
+      .string()
+      .regex(/^\d{4}-\d{2}$/, "Formato esperado YYYY-MM")
+      .parse(req.query.month);
+
+    const data = await getMonthlyAvailability(month, appt.durationMin, appt.id);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Horas libres de un día concreto para esta cita.
+router.get("/:id/slots", async (req, res, next) => {
+  try {
+    const appt = await loadSchedulable(req.params.id);
+    const date = z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Formato esperado YYYY-MM-DD")
+      .parse(req.query.date);
+
+    const slots = await getAvailableSlots({
+      date,
+      durationMin: appt.durationMin,
+      excludeAppointmentId: appt.id,
+    });
+
+    res.json({
+      date,
+      durationMin: appt.durationMin,
+      slots: slots.map((s) => s.toISOString()),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const confirmSchema = z.object({
+  meetingUrl: z
+    .string()
+    .trim()
+    .url("El link de la videollamada es obligatorio y debe ser una URL válida."),
+  meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+  // Obligatorio si la cita no tiene horario propuesto; opcional para ajustar.
+  scheduledAt: z.string().datetime().optional(),
+});
+
+/**
+ * Agenda la cita: fija horario (si se manda) + link y envía el correo de
+ * confirmación a la paciente. Mismo comportamiento que
+ * POST /admin/payments/:id/confirm-appointment, pero por id de cita para que
+ * la secretaria no necesite entrar al detalle del pago.
+ */
+router.post("/:id/confirm", async (req, res, next) => {
+  try {
+    const { meetingUrl, meetingProvider, scheduledAt } = confirmSchema.parse(req.body);
+
+    const updated = await confirmAppointment({
+      appointmentId: req.params.id,
+      meetingUrl,
+      meetingProvider,
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
+    });
+
+    res.json({ ok: true, appointment: updated });
+  } catch (err) {
+    next(err);
+  }
+});
 
 const declineSchema = z.object({
   // Motivo opcional que se le muestra a la paciente. Sin esto solo recibiria

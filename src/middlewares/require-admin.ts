@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import type { AdminRole } from "@prisma/client";
 import { env } from "../config/env.js";
 import { HttpError } from "./error-handler.js";
 
@@ -40,3 +41,32 @@ export function requireAdmin(req: Request, _res: Response, next: NextFunction): 
     next(new HttpError(401, "Token inválido o expirado."));
   }
 }
+
+/**
+ * Roles con acceso completo al panel (pagos, pacientes, expedientes,
+ * disponibilidad, servicios). SECRETARY queda fuera a propósito: solo puede
+ * agendar citas, ver el calendario y enviar el correo de confirmación.
+ */
+export const FULL_ACCESS_ROLES: readonly AdminRole[] = ["NUTRITIONIST", "STAFF"];
+
+/**
+ * Restringe una ruta a ciertos roles. Debe ir después de requireAdmin (o se
+ * encadena internamente si no se corrió antes).
+ */
+export function requireRole(...roles: readonly AdminRole[]) {
+  return function roleGuard(req: Request, res: Response, next: NextFunction): void {
+    if (!req.admin) {
+      return requireAdmin(req, res, (err?: unknown) => {
+        if (err) return next(err);
+        roleGuard(req, res, next);
+      });
+    }
+    if (!roles.includes(req.admin.role as AdminRole)) {
+      return next(new HttpError(403, "No tienes permiso para esta sección."));
+    }
+    next();
+  };
+}
+
+/** Acceso completo: nutricionista y staff. */
+export const requireFullAccess = requireRole(...FULL_ACCESS_ROLES);

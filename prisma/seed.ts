@@ -7,6 +7,12 @@ const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? "admin@nutriverde.local
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe123!";
 const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? "Nutricionista";
 
+// Secretaria (opcional): solo se crea si SEED_SECRETARY_EMAIL está definido.
+// Rol SECRETARY = únicamente agendar citas y enviar el correo de confirmación.
+const SEED_SECRETARY_EMAIL = process.env.SEED_SECRETARY_EMAIL;
+const SEED_SECRETARY_PASSWORD = process.env.SEED_SECRETARY_PASSWORD ?? "Secretaria123!";
+const SEED_SECRETARY_NAME = process.env.SEED_SECRETARY_NAME ?? "Secretaria";
+
 async function seedServices() {
   const services = [
     {
@@ -101,6 +107,29 @@ async function seedAdmin() {
   }
 }
 
+async function seedSecretary() {
+  if (!SEED_SECRETARY_EMAIL) return;
+
+  const existing = await prisma.adminUser.findUnique({
+    where: { email: SEED_SECRETARY_EMAIL },
+  });
+  if (existing) {
+    console.log(`✓ Secretary user already exists: ${SEED_SECRETARY_EMAIL}`);
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(SEED_SECRETARY_PASSWORD, 10);
+  await prisma.adminUser.create({
+    data: {
+      email: SEED_SECRETARY_EMAIL,
+      passwordHash,
+      fullName: SEED_SECRETARY_NAME,
+      role: "SECRETARY",
+    },
+  });
+  console.log(`✓ Created secretary user: ${SEED_SECRETARY_EMAIL}`);
+}
+
 async function seedAvailability() {
   // Solo se semilla la primera vez (si no hay slots configurados)
   const count = await prisma.availabilitySlot.count();
@@ -125,6 +154,7 @@ async function main() {
   console.log("Seeding database…");
   await seedServices();
   await seedAdmin();
+  await seedSecretary();
   await seedAvailability();
   console.log("Done.");
 }

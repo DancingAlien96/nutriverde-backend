@@ -10,6 +10,7 @@ import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
 import { isValidSlot } from "../../lib/scheduling.js";
+import { confirmAppointment } from "../../lib/appointments.js";
 import { isUtf8, utf8Message } from "../../lib/text.js";
 
 const router = Router();
@@ -273,61 +274,23 @@ router.post("/:id/confirm-appointment", async (req, res, next) => {
 
     const payment = await prisma.payment.findUnique({
       where: { id: req.params.id },
-      include: { patient: true, service: true, appointment: true },
+      select: { appointmentId: true, status: true },
     });
-    if (!payment?.appointment) {
+    if (!payment?.appointmentId) {
       throw new HttpError(404, "Cita no encontrada para este pago.");
     }
     if (payment.status !== "APPROVED") {
       throw new HttpError(409, "Primero debes aprobar el pago.");
     }
 
-    const when = scheduledAt
-      ? new Date(scheduledAt)
-      : payment.appointment.scheduledAt;
-    if (!when) {
-      throw new HttpError(
-        400,
-        "No hay un horario para confirmar. El paciente debe proponer uno primero.",
-      );
-    }
-
-    // Revalidamos el slot (excluyendo esta misma cita).
-    const slotOk = await isValidSlot(
-      when,
-      payment.appointment.durationMin,
-      payment.appointment.id,
-    );
-    if (!slotOk) {
-      throw new HttpError(
-        409,
-        "Ese horario ya no está disponible. Pide al paciente que elija otro o ajusta la hora.",
-      );
-    }
-
-    const updated = await prisma.appointment.update({
-      where: { id: payment.appointment.id },
-      data: {
-        scheduledAt: when,
-        status: "SCHEDULED",
-        meetingUrl,
-        meetingProvider: meetingProvider ?? "GOOGLE_MEET",
-      },
+    // La lógica (validar slot, marcar SCHEDULED, enviar correo) está en
+    // lib/appointments para compartirla con la agenda de la secretaria.
+    const updated = await confirmAppointment({
+      appointmentId: payment.appointmentId,
+      meetingUrl,
+      meetingProvider,
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     });
-
-    void sendMail({
-      to: payment.patient.email,
-      subject: "Cita confirmada — Plenha Nutrition",
-      template: "appointment-confirmed",
-      html: appointmentConfirmedHtml({
-        name: payment.patient.fullName,
-        service: payment.service.name,
-        when,
-        durationMin: payment.appointment.durationMin,
-        patientTimezone: payment.patient.timezone,
-        meetingUrl,
-      }),
-    }).catch((err) => console.error("Email confirmación falló:", err));
 
     res.json({ ok: true, appointment: updated });
   } catch (err) {
@@ -442,52 +405,6 @@ function paymentApprovedPendingTimeHtml(opts: {
       ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
       <p style="margin-top: 16px;">Estamos confirmando tu cita. En breve recibirás un correo con la
       <strong>confirmación final y el enlace de la videollamada</strong>.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
-    </div>
-  `;
-}
-
-/** Confirmación final de la cita con el enlace de la videollamada. */
-function appointmentConfirmedHtml(opts: {
-  name: string;
-  service: string;
-  when: Date;
-  durationMin: number;
-  patientTimezone: string;
-  meetingUrl: string;
-}): string {
-  const gtTime = opts.when.toLocaleString("es-GT", {
-    timeZone: "America/Guatemala",
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const localTime = opts.when.toLocaleString("es-GT", {
-    timeZone: opts.patientTimezone,
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const sameTz = opts.patientTimezone === "America/Guatemala";
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
-      <h1 style="color: #687445; font-size: 22px;">¡Tu cita está confirmada, ${escapeHtml(opts.name)}!</h1>
-      <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
-      <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
-      ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
-      <p style="margin: 24px 0;">
-        <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
-          Unirme a la videollamada
-        </a>
-      </p>
-      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>
-      <p style="margin-top: 24px;">Si necesitas reprogramar, responde a este correo.</p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
     </div>
   `;

@@ -56,6 +56,9 @@ enum DocumentType {
 enum AdminRole {
   NUTRITIONIST
   STAFF
+  // Secretaria: solo agenda citas (confirma horario + link y envia el correo).
+  // No ve pagos, pacientes, expedientes ni configuracion.
+  SECRETARY
 }
 
 // ============================================================
