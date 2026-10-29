@@ -303,14 +303,14 @@ router.post("/:id/confirm-appointment", async (req, res, next) => {
 
     // La lógica (validar slot, marcar SCHEDULED, enviar correo) está en
     // lib/appointments para compartirla con la agenda de la secretaria.
-    const updated = await confirmAppointment({
+    const { appointment, email } = await confirmAppointment({
       appointmentId: payment.appointmentId,
       meetingUrl,
       meetingProvider,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     });
 
-    res.json({ ok: true, appointment: updated });
+    res.json({ ok: true, appointment, email });
   } catch (err) {
     next(err);
   }

@@ -327,6 +327,9 @@ model Appointment {
   // Paquete del que descuenta esta cita (null = cita suelta o anterior a
   // los paquetes). Una cita CANCELED no consume sesión.
   packageId      String?
+  // Control de facturación: si ya se emitió la factura de esta cita.
+  invoiced       Boolean           @default(false)
+  invoicedAt     DateTime?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 

@@ -13,7 +13,9 @@ import {
   appointmentRescheduledHtml,
   confirmAppointment,
   meetingUrlSchema,
+  notifyNutritionists,
   timezoneSchema,
+  trySendMail,
 } from "../../lib/appointments.js";
 import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../lib/scheduling.js";
 import { packageInfoForAppointments, packagesForPatient } from "../../lib/packages.js";
@@ -55,6 +57,8 @@ router.get("/", async (req, res, next) => {
         meetingProvider: true,
         notes: true,
         packageId: true,
+        invoiced: true,
+        invoicedAt: true,
         patient: {
           select: { id: true, fullName: true, email: true, phone: true },
         },
@@ -237,7 +241,7 @@ router.post("/", async (req, res, next) => {
     const stamp = `Agendada manualmente desde el panel por ${createdBy}.`;
     const notes = input.notes ? `${stamp}\n${input.notes}` : stamp;
 
-    const { patient, appointment, existed } = await prisma.$transaction(async (tx) => {
+    const { patient, appointment, existed, newPackageId } = await prisma.$transaction(async (tx) => {
       // Recuento definitivo dentro de la transacción, con la fila del paquete
       // bloqueada: dos peticiones casi simultáneas no pueden descontar la
       // misma última sesión (la comprobación de arriba es solo para dar un
@@ -275,6 +279,23 @@ router.post("/", async (req, res, next) => {
             },
           });
 
+      // Venta de un programa desde el panel: si la secretaria eligió un
+      // servicio de varias sesiones y no está descontando de un paquete
+      // existente, se registra el paquete nuevo (sin pago en el sistema) y
+      // esta cita queda como su primera sesión.
+      let newPackageId: string | null = null;
+      if (!pkg && service.sessions > 1) {
+        const created = await tx.sessionPackage.create({
+          data: {
+            patientId: patient.id,
+            serviceId: service.id,
+            totalSessions: service.sessions,
+            notes: `Registrado manualmente desde el panel por ${createdBy}.`,
+          },
+        });
+        newPackageId = created.id;
+      }
+
       const appointment = await tx.appointment.create({
         data: {
           patientId: patient.id,
@@ -286,14 +307,16 @@ router.post("/", async (req, res, next) => {
           meetingUrl: input.meetingUrl || null,
           meetingProvider: input.meetingUrl ? input.meetingProvider ?? "GOOGLE_MEET" : null,
           notes,
-          packageId: pkg?.id ?? null,
+          packageId: pkg?.id ?? newPackageId,
         },
       });
 
-      return { patient, appointment, existed: !!existing };
+      return { patient, appointment, existed: !!existing, newPackageId };
     });
 
-    void sendMail({
+    // Correo a la paciente. Se espera el resultado para mostrarlo en pantalla:
+    // la cita ya está guardada aunque el correo falle.
+    const email = await trySendMail({
       to: patient.email,
       subject: "Cita confirmada — Plenha Nutrition",
       template: "appointment-confirmed",
@@ -305,11 +328,46 @@ router.post("/", async (req, res, next) => {
         patientTimezone: patient.timezone,
         meetingUrl: input.meetingUrl || null,
       }),
-    }).catch((err) => console.error("Email confirmación (manual) falló:", err));
+    });
+
+    // Última sesión del paquete: aviso a nutricionista y secretarias para
+    // que recuerden a la paciente renovar antes de que se quede sin citas.
+    if (pkg) {
+      const usedNow = await prisma.appointment.count({
+        where: { packageId: pkg.id, status: { not: "CANCELED" } },
+      });
+      if (usedNow >= pkg.totalSessions) {
+        const staff = await prisma.adminUser.findMany({
+          where: { active: true, role: { in: ["NUTRITIONIST", "SECRETARY"] } },
+          select: { email: true },
+        });
+        for (const admin of staff) {
+          void sendMail({
+            to: admin.email,
+            subject: `Último paquete agendado: ${patient.fullName}`,
+            template: "package-last-session-admin",
+            html: packageExhaustedAdminHtml({
+              patientName: patient.fullName,
+              patientEmail: patient.email,
+              service: service.name,
+              total: pkg.totalSessions,
+              when: scheduledAt,
+            }),
+          }).catch((err) => console.error("Email paquete agotado falló:", err));
+        }
+      }
+    }
+
+    void notifyNutritionists({ actor: req.admin!, action: "created", appointmentId: appointment.id });
 
     res.status(201).json({
       ok: true,
       appointment,
+      email,
+      // Paquete creado en esta misma operación (venta de programa), si aplica.
+      packageCreated: newPackageId
+        ? { id: newPackageId, totalSessions: service.sessions, serviceName: service.name }
+        : null,
       patient: {
         id: patient.id,
         fullName: patient.fullName,
@@ -317,6 +375,83 @@ router.post("/", async (req, res, next) => {
         existed,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Pacientes con el paquete agotado (todas las sesiones ya asignadas) y sin
+ * otro paquete con sesiones: la lista "por renovar" de la agenda. Se limita
+ * a paquetes cuya última sesión fue hace menos de 45 días (o es futura)
+ * para que la lista no crezca sin fin.
+ */
+router.get("/renewals", async (_req, res, next) => {
+  try {
+    const since = new Date(Date.now() - 45 * 24 * 60 * 60_000);
+    const packages = await prisma.sessionPackage.findMany({
+      include: {
+        patient: { select: { id: true, fullName: true, email: true, phone: true } },
+        service: { select: { name: true } },
+        appointments: {
+          where: { status: { not: "CANCELED" } },
+          orderBy: { scheduledAt: "asc" },
+          select: { scheduledAt: true },
+        },
+      },
+    });
+
+    // Si la paciente ya tiene otro paquete con sesiones, ya renovó.
+    const renewed = new Set(
+      packages
+        .filter((p) => p.appointments.length < p.totalSessions)
+        .map((p) => p.patientId),
+    );
+
+    const renewals = packages
+      .filter((p) => p.appointments.length >= p.totalSessions && !renewed.has(p.patientId))
+      .map((p) => {
+        const dates = p.appointments.map((a) => a.scheduledAt).filter((d): d is Date => !!d);
+        const lastSessionAt = dates.length ? dates[dates.length - 1] : null;
+        return {
+          packageId: p.id,
+          patient: p.patient,
+          serviceName: p.service.name,
+          totalSessions: p.totalSessions,
+          lastSessionAt,
+          lastSessionDone: lastSessionAt ? lastSessionAt < new Date() : false,
+        };
+      })
+      .filter((r) => !r.lastSessionAt || r.lastSessionAt >= since)
+      .sort((a, b) => (b.lastSessionAt?.getTime() ?? 0) - (a.lastSessionAt?.getTime() ?? 0));
+
+    res.json({ renewals });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const invoiceSchema = z.object({ invoiced: z.boolean() });
+
+/**
+ * Marca o desmarca "factura emitida" en una cita. Es solo un control
+ * administrativo (no genera documentos); lo usan secretaria y nutricionista.
+ */
+router.patch("/:id/invoice", async (req, res, next) => {
+  try {
+    const { invoiced } = invoiceSchema.parse(req.body);
+    const exists = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!exists) throw new HttpError(404, "Cita no encontrada.");
+
+    const appointment = await prisma.appointment.update({
+      where: { id: req.params.id },
+      data: { invoiced, invoicedAt: invoiced ? new Date() : null },
+      select: { id: true, invoiced: true, invoicedAt: true },
+    });
+    res.json({ ok: true, appointment });
   } catch (err) {
     next(err);
   }
@@ -391,14 +526,16 @@ router.post("/:id/confirm", async (req, res, next) => {
   try {
     const { meetingUrl, meetingProvider, scheduledAt } = confirmSchema.parse(req.body);
 
-    const updated = await confirmAppointment({
+    const { appointment, email } = await confirmAppointment({
       appointmentId: req.params.id,
       meetingUrl: meetingUrl || null,
       meetingProvider,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     });
 
-    res.json({ ok: true, appointment: updated });
+    void notifyNutritionists({ actor: req.admin!, action: "confirmed", appointmentId: appointment.id });
+
+    res.json({ ok: true, appointment, email });
   } catch (err) {
     next(err);
   }
@@ -488,6 +625,14 @@ router.post("/:id/decline-time", async (req, res, next) => {
       }),
     }).catch((err) => console.error("Email de reprogramación falló:", err));
 
+    void notifyNutritionists({
+      actor: req.admin!,
+      action: "declined",
+      appointmentId: updated.id,
+      reason: reason || null,
+      previous: rejectedWhen,
+    });
+
     res.json({ ok: true, appointment: updated });
   } catch (err) {
     next(err);
@@ -543,6 +688,13 @@ router.post("/:id/cancel", async (req, res, next) => {
         reason: reason || null,
       }),
     }).catch((err) => console.error("Email cancelación falló:", err));
+
+    void notifyNutritionists({
+      actor: req.admin!,
+      action: "canceled",
+      appointmentId: updated.id,
+      reason: reason || null,
+    });
 
     res.json({ ok: true, appointment: updated });
   } catch (err) {
@@ -608,6 +760,13 @@ router.post("/:id/reschedule", async (req, res, next) => {
       }),
     }).catch((err) => console.error("Email reprogramación falló:", err));
 
+    void notifyNutritionists({
+      actor: req.admin!,
+      action: "rescheduled",
+      appointmentId: updated.id,
+      previous: appt.status === "SCHEDULED" ? appt.scheduledAt : null,
+    });
+
     res.json({ ok: true, appointment: updated });
   } catch (err) {
     next(err);
@@ -648,6 +807,35 @@ function timeDeclinedHtml(opts: {
       </p>
       <p style="color: #6b7280; font-size: 13px;">Si ninguno de los horarios disponibles te funciona, responde este correo y lo resolvemos.</p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    </div>
+  `;
+}
+
+/** Aviso interno: se agendó la última sesión de un paquete. */
+function packageExhaustedAdminHtml(opts: {
+  patientName: string;
+  patientEmail: string;
+  service: string;
+  total: number;
+  when: Date;
+}): string {
+  const whenGt = opts.when.toLocaleString("es-GT", {
+    timeZone: "America/Guatemala",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <h2>Se agendó la última sesión de un paquete</h2>
+      <ul style="line-height: 1.8;">
+        <li><strong>Paciente:</strong> ${escapeHtml(opts.patientName)} (${escapeHtml(opts.patientEmail)})</li>
+        <li><strong>Paquete:</strong> ${escapeHtml(opts.service)} · sesión ${opts.total} de ${opts.total}</li>
+        <li><strong>Fecha de esa sesión:</strong> ${escapeHtml(whenGt)}</li>
+      </ul>
+      <p>Después de esta cita la paciente no tendrá sesiones disponibles. Conviene recordarle que renueve el programa o pague una cita individual. Aparece en la lista "Por renovar" de la agenda.</p>
     </div>
   `;
 }
