@@ -311,7 +311,21 @@ export async function notifyNutritionists(opts: {
   previous?: Date | null;
 }): Promise<void> {
   if (opts.actor.role === "NUTRITIONIST") return;
+  // Se llama con `void`: nada de aquí puede escapar como rechazo sin manejar.
+  try {
+    await notifyNutritionistsUnsafe(opts);
+  } catch (err) {
+    console.error("Aviso a nutricionista falló:", err);
+  }
+}
 
+async function notifyNutritionistsUnsafe(opts: {
+  actor: { sub: string; email: string; role: string };
+  action: StaffAction;
+  appointmentId: string;
+  reason?: string | null;
+  previous?: Date | null;
+}): Promise<void> {
   const [appt, actor, recipients] = await Promise.all([
     prisma.appointment.findUnique({
       where: { id: opts.appointmentId },
