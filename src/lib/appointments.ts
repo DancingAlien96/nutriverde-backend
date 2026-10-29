@@ -38,6 +38,9 @@ export function isValidTimezone(tz: string): boolean {
   }
 }
 
+export const modalitySchema = z.enum(["VIRTUAL", "IN_PERSON"]);
+export type Modality = z.infer<typeof modalitySchema>;
+
 export const timezoneSchema = z
   .string()
   .trim()
@@ -58,6 +61,8 @@ export interface ConfirmAppointmentInput {
   /** Opcional: si falta se conserva el que ya tenía la cita (o ninguno). */
   meetingUrl?: string | null;
   meetingProvider?: "GOOGLE_MEET" | "ZOOM";
+  /** Virtual o presencial; si falta se conserva la de la cita. */
+  modality?: Modality;
   /** Opcional: fija o ajusta el horario. Si falta, se usa el ya propuesto. */
   scheduledAt?: Date;
 }
@@ -120,14 +125,16 @@ export async function confirmAppointment(input: ConfirmAppointmentInput) {
     );
   }
 
-  // Sin enlace nuevo se conserva el anterior; si tampoco había, la cita
-  // queda confirmada sin enlace y el correo avisa que se enviará después.
-  const meetingUrl = input.meetingUrl || appt.meetingUrl || null;
+  // Presencial: nunca lleva enlace. Virtual: sin enlace nuevo se conserva el
+  // anterior; si tampoco había, el correo avisa que se enviará después.
+  const modality = input.modality ?? appt.modality;
+  const meetingUrl = modality === "IN_PERSON" ? null : input.meetingUrl || appt.meetingUrl || null;
   const updated = await prisma.appointment.update({
     where: { id: appt.id },
     data: {
       scheduledAt: when,
       status: "SCHEDULED",
+      modality,
       meetingUrl,
       meetingProvider: meetingUrl ? input.meetingProvider ?? appt.meetingProvider ?? "GOOGLE_MEET" : null,
     },
@@ -145,6 +152,7 @@ export async function confirmAppointment(input: ConfirmAppointmentInput) {
       durationMin: appt.durationMin,
       patientTimezone: appt.patient.timezone,
       meetingUrl,
+      modality,
     }),
   });
 
@@ -161,6 +169,14 @@ function escapeHtml(s: string): string {
 }
 
 /** Confirmación final de la cita con el enlace de la videollamada. */
+/** Bloque del correo para una cita presencial (sin enlace). */
+function inPersonBlock(): string {
+  return `
+      <p style="margin: 20px 0 8px;"><strong>Tu cita es presencial.</strong></p>
+      <p>Un día antes te enviaremos un recordatorio con la dirección, las indicaciones para llegar y lo que necesitas traer.</p>
+      <p>Te pedimos llegar unos 10 minutos antes de la hora.</p>`;
+}
+
 export function appointmentConfirmedHtml(opts: {
   name: string;
   service: string;
@@ -168,6 +184,7 @@ export function appointmentConfirmedHtml(opts: {
   durationMin: number;
   patientTimezone: string;
   meetingUrl: string | null;
+  modality?: Modality;
 }): string {
   const gtTime = opts.when.toLocaleString("es-GT", {
     timeZone: "America/Guatemala",
@@ -195,14 +212,16 @@ export function appointmentConfirmedHtml(opts: {
       <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
       ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
       ${
-        opts.meetingUrl
-          ? `<p style="margin: 24px 0;">
+        opts.modality === "IN_PERSON"
+          ? inPersonBlock()
+          : opts.meetingUrl
+            ? `<p style="margin: 24px 0;">
         <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
           Unirme a la videollamada
         </a>
       </p>
       <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
-          : `<p style="margin: 24px 0;">Te enviaremos el enlace de la videollamada antes de la cita.</p>`
+            : `<p style="margin: 24px 0;">Te enviaremos el enlace de la videollamada antes de la cita.</p>`
       }
       <p style="margin-top: 24px;">Si necesitas reprogramar, responde a este correo.</p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
@@ -248,6 +267,7 @@ export function appointmentRescheduledHtml(opts: {
   durationMin: number;
   patientTimezone: string;
   meetingUrl: string | null;
+  modality?: Modality;
 }): string {
   const fmt = (d: Date, tz: string) =>
     d.toLocaleString("es-GT", {
@@ -272,14 +292,16 @@ export function appointmentRescheduledHtml(opts: {
       <p><strong>Nueva fecha y hora (Guatemala):</strong> ${escapeHtml(fmt(opts.when, "America/Guatemala"))}</p>
       ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(fmt(opts.when, opts.patientTimezone))}</p>`}
       ${
-        opts.meetingUrl
-          ? `<p style="margin: 24px 0;">
+        opts.modality === "IN_PERSON"
+          ? inPersonBlock()
+          : opts.meetingUrl
+            ? `<p style="margin: 24px 0;">
         <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
           Unirme a la videollamada
         </a>
       </p>
       <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
-          : `<p>Te enviaremos el enlace de la videollamada antes de la cita.</p>`
+            : `<p>Te enviaremos el enlace de la videollamada antes de la cita.</p>`
       }
       <p style="margin-top: 24px;">Si el nuevo horario no te funciona, responde a este correo.</p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
@@ -357,6 +379,7 @@ async function notifyNutritionistsUnsafe(opts: {
     when: appt.scheduledAt,
     previous: opts.previous ?? null,
     meetingUrl: appt.meetingUrl,
+    modality: appt.modality,
     reason: opts.reason ?? null,
     panelUrl: `${env.PUBLIC_BASE_URL}/admin/citas`,
   });
@@ -392,6 +415,7 @@ function staffNoticeHtml(opts: {
   when: Date | null;
   previous: Date | null;
   meetingUrl: string | null;
+  modality: Modality;
   reason: string | null;
   panelUrl: string;
 }): string {
@@ -401,9 +425,10 @@ function staffNoticeHtml(opts: {
       <ul style="line-height: 1.8; padding-left: 18px;">
         <li><strong>Paciente:</strong> ${escapeHtml(opts.patientName)} (${escapeHtml(opts.patientEmail)}${opts.patientPhone ? `, ${escapeHtml(opts.patientPhone)}` : ""})</li>
         <li><strong>Servicio:</strong> ${escapeHtml(opts.service)}</li>
+        <li><strong>Modalidad:</strong> ${opts.modality === "IN_PERSON" ? "Presencial" : "Virtual"}</li>
         ${opts.previous ? `<li><strong>Horario anterior:</strong> <span style="text-decoration: line-through;">${escapeHtml(fmtGtLong(opts.previous))}</span></li>` : ""}
         ${opts.when ? `<li><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(fmtGtLong(opts.when))}</li>` : "<li><strong>Fecha y hora:</strong> pendiente</li>"}
-        ${opts.meetingUrl ? `<li><strong>Enlace:</strong> ${escapeHtml(opts.meetingUrl)}</li>` : "<li><strong>Enlace:</strong> aún sin enlace</li>"}
+        ${opts.modality === "IN_PERSON" ? "" : opts.meetingUrl ? `<li><strong>Enlace:</strong> ${escapeHtml(opts.meetingUrl)}</li>` : "<li><strong>Enlace:</strong> aún sin enlace</li>"}
         ${opts.reason ? `<li><strong>Motivo:</strong> ${escapeHtml(opts.reason)}</li>` : ""}
       </ul>
       <p style="margin: 24px 0;">

@@ -327,9 +327,13 @@ model Appointment {
   // Paquete del que descuenta esta cita (null = cita suelta o anterior a
   // los paquetes). Una cita CANCELED no consume sesión.
   packageId      String?
-  // Control de facturación: si ya se emitió la factura de esta cita.
-  invoiced       Boolean           @default(false)
+  // Control de facturación: pendiente, factura emitida o la paciente no la
+  // solicitó. invoicedAt guarda cuándo se marcó como emitida.
+  invoiceStatus  InvoiceStatus     @default(PENDING)
   invoicedAt     DateTime?
+  // Virtual (videollamada, lleva enlace) o presencial (sin enlace; se avisa
+  // a la paciente un día antes con la dirección).
+  modality       AppointmentModality @default(VIRTUAL)
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -383,6 +387,17 @@ enum AppointmentStatus {
 enum MeetingProvider {
   GOOGLE_MEET
   ZOOM
+}
+
+enum AppointmentModality {
+  VIRTUAL
+  IN_PERSON
+}
+
+enum InvoiceStatus {
+  PENDING
+  ISSUED
+  NOT_REQUESTED
 }
 
 // ============================================================

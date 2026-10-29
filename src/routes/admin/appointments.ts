@@ -13,6 +13,7 @@ import {
   appointmentRescheduledHtml,
   confirmAppointment,
   meetingUrlSchema,
+  modalitySchema,
   notifyNutritionists,
   timezoneSchema,
   trySendMail,
@@ -57,8 +58,9 @@ router.get("/", async (req, res, next) => {
         meetingProvider: true,
         notes: true,
         packageId: true,
-        invoiced: true,
+        invoiceStatus: true,
         invoicedAt: true,
+        modality: true,
         patient: {
           select: { id: true, fullName: true, email: true, phone: true },
         },
@@ -110,6 +112,7 @@ router.get("/pending", async (_req, res, next) => {
         scheduleToken: true,
         meetingUrl: true,
         meetingProvider: true,
+        modality: true,
         updatedAt: true,
         package: { select: { id: true, totalSessions: true } },
         patient: {
@@ -169,6 +172,8 @@ const createSchema = z.object({
   // Opcional: la cita puede crearse sin enlace y enviarlo después.
   meetingUrl: meetingUrlSchema.optional().or(z.literal("")),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+  // Virtual (con enlace) o presencial (sin enlace, aviso un día antes).
+  modality: modalitySchema.default("VIRTUAL"),
   notes: z
     .string()
     .trim()
@@ -238,6 +243,8 @@ router.post("/", async (req, res, next) => {
     }
 
     const createdBy = req.admin!.email;
+    // Presencial: nunca lleva enlace aunque venga en el cuerpo.
+    const createUrl = input.modality === "IN_PERSON" ? null : input.meetingUrl || null;
     const stamp = `Agendada manualmente desde el panel por ${createdBy}.`;
     const notes = input.notes ? `${stamp}\n${input.notes}` : stamp;
 
@@ -304,8 +311,9 @@ router.post("/", async (req, res, next) => {
           timezone: patient.timezone,
           scheduledAt,
           status: "SCHEDULED",
-          meetingUrl: input.meetingUrl || null,
-          meetingProvider: input.meetingUrl ? input.meetingProvider ?? "GOOGLE_MEET" : null,
+          modality: input.modality,
+          meetingUrl: createUrl,
+          meetingProvider: createUrl ? input.meetingProvider ?? "GOOGLE_MEET" : null,
           notes,
           packageId: pkg?.id ?? newPackageId,
         },
@@ -326,7 +334,8 @@ router.post("/", async (req, res, next) => {
         when: scheduledAt,
         durationMin,
         patientTimezone: patient.timezone,
-        meetingUrl: input.meetingUrl || null,
+        meetingUrl: createUrl,
+        modality: input.modality,
       }),
     });
 
@@ -431,15 +440,18 @@ router.get("/renewals", async (_req, res, next) => {
   }
 });
 
-const invoiceSchema = z.object({ invoiced: z.boolean() });
+const invoiceSchema = z.object({
+  status: z.enum(["PENDING", "ISSUED", "NOT_REQUESTED"]),
+});
 
 /**
- * Marca o desmarca "factura emitida" en una cita. Es solo un control
- * administrativo (no genera documentos); lo usan secretaria y nutricionista.
+ * Estado de facturación de una cita: pendiente, factura emitida o la
+ * paciente no la solicitó. Es solo un control administrativo (no genera
+ * documentos); lo usan secretaria y nutricionista.
  */
 router.patch("/:id/invoice", async (req, res, next) => {
   try {
-    const { invoiced } = invoiceSchema.parse(req.body);
+    const { status } = invoiceSchema.parse(req.body);
     const exists = await prisma.appointment.findUnique({
       where: { id: req.params.id },
       select: { id: true },
@@ -448,8 +460,8 @@ router.patch("/:id/invoice", async (req, res, next) => {
 
     const appointment = await prisma.appointment.update({
       where: { id: req.params.id },
-      data: { invoiced, invoicedAt: invoiced ? new Date() : null },
-      select: { id: true, invoiced: true, invoicedAt: true },
+      data: { invoiceStatus: status, invoicedAt: status === "ISSUED" ? new Date() : null },
+      select: { id: true, invoiceStatus: true, invoicedAt: true },
     });
     res.json({ ok: true, appointment });
   } catch (err) {
@@ -512,6 +524,7 @@ const confirmSchema = z.object({
   // Opcional: se puede confirmar sin enlace y mandarlo después.
   meetingUrl: meetingUrlSchema.optional().or(z.literal("")),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+  modality: modalitySchema.optional(),
   // Obligatorio si la cita no tiene horario propuesto; opcional para ajustar.
   scheduledAt: z.string().datetime().optional(),
 });
@@ -524,12 +537,13 @@ const confirmSchema = z.object({
  */
 router.post("/:id/confirm", async (req, res, next) => {
   try {
-    const { meetingUrl, meetingProvider, scheduledAt } = confirmSchema.parse(req.body);
+    const { meetingUrl, meetingProvider, modality, scheduledAt } = confirmSchema.parse(req.body);
 
     const { appointment, email } = await confirmAppointment({
       appointmentId: req.params.id,
       meetingUrl: meetingUrl || null,
       meetingProvider,
+      modality,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     });
 
@@ -707,6 +721,7 @@ const rescheduleSchema = z.object({
   // Opcional: si cambia el enlace. Si no viene, se conserva el que había.
   meetingUrl: meetingUrlSchema.optional(),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
+  modality: modalitySchema.optional(),
 });
 
 /**
@@ -716,7 +731,7 @@ const rescheduleSchema = z.object({
  */
 router.post("/:id/reschedule", async (req, res, next) => {
   try {
-    const { scheduledAt, meetingUrl, meetingProvider } = rescheduleSchema.parse(req.body);
+    const { scheduledAt, meetingUrl, meetingProvider, modality } = rescheduleSchema.parse(req.body);
 
     const appt = await prisma.appointment.findUnique({
       where: { id: req.params.id },
@@ -734,12 +749,14 @@ router.post("/:id/reschedule", async (req, res, next) => {
     const ok = await isValidSlot(when, appt.durationMin, appt.id);
     if (!ok) throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
 
-    const finalUrl = meetingUrl ?? appt.meetingUrl;
+    const finalModality = modality ?? appt.modality;
+    const finalUrl = finalModality === "IN_PERSON" ? null : meetingUrl ?? appt.meetingUrl;
     const updated = await prisma.appointment.update({
       where: { id: appt.id },
       data: {
         scheduledAt: when,
         status: "SCHEDULED",
+        modality: finalModality,
         meetingUrl: finalUrl,
         meetingProvider: finalUrl ? meetingProvider ?? appt.meetingProvider ?? "GOOGLE_MEET" : null,
       },
@@ -757,6 +774,7 @@ router.post("/:id/reschedule", async (req, res, next) => {
         durationMin: appt.durationMin,
         patientTimezone: appt.patient.timezone,
         meetingUrl: finalUrl,
+        modality: finalModality,
       }),
     }).catch((err) => console.error("Email reprogramación falló:", err));
 
