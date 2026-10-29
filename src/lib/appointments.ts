@@ -13,7 +13,6 @@ import { HttpError } from "../middlewares/error-handler.js";
 export const meetingUrlSchema = z
   .string()
   .trim()
-  .url("El link de la videollamada es obligatorio y debe ser una URL válida.")
   .refine(
     (u) => {
       try {
@@ -22,7 +21,10 @@ export const meetingUrlSchema = z
         return false;
       }
     },
-    { message: "El link de la videollamada debe empezar con https://" },
+    {
+      message:
+        "El enlace de la videollamada no es válido: pega la dirección completa de Meet o Zoom (empieza con https://) o déjalo vacío.",
+    },
   );
 
 /** Zona horaria IANA válida (ej. America/Guatemala). */
@@ -52,7 +54,8 @@ export const timezoneSchema = z
  */
 export interface ConfirmAppointmentInput {
   appointmentId: string;
-  meetingUrl: string;
+  /** Opcional: si falta se conserva el que ya tenía la cita (o ninguno). */
+  meetingUrl?: string | null;
   meetingProvider?: "GOOGLE_MEET" | "ZOOM";
   /** Opcional: fija o ajusta el horario. Si falta, se usa el ya propuesto. */
   scheduledAt?: Date;
@@ -92,13 +95,16 @@ export async function confirmAppointment(input: ConfirmAppointmentInput) {
     );
   }
 
+  // Sin enlace nuevo se conserva el anterior; si tampoco había, la cita
+  // queda confirmada sin enlace y el correo avisa que se enviará después.
+  const meetingUrl = input.meetingUrl || appt.meetingUrl || null;
   const updated = await prisma.appointment.update({
     where: { id: appt.id },
     data: {
       scheduledAt: when,
       status: "SCHEDULED",
-      meetingUrl: input.meetingUrl,
-      meetingProvider: input.meetingProvider ?? "GOOGLE_MEET",
+      meetingUrl,
+      meetingProvider: meetingUrl ? input.meetingProvider ?? appt.meetingProvider ?? "GOOGLE_MEET" : null,
     },
   });
 
@@ -112,7 +118,7 @@ export async function confirmAppointment(input: ConfirmAppointmentInput) {
       when,
       durationMin: appt.durationMin,
       patientTimezone: appt.patient.timezone,
-      meetingUrl: input.meetingUrl,
+      meetingUrl,
     }),
   }).catch((err) => console.error("Email confirmación falló:", err));
 
@@ -135,7 +141,7 @@ export function appointmentConfirmedHtml(opts: {
   when: Date;
   durationMin: number;
   patientTimezone: string;
-  meetingUrl: string;
+  meetingUrl: string | null;
 }): string {
   const gtTime = opts.when.toLocaleString("es-GT", {
     timeZone: "America/Guatemala",
@@ -162,12 +168,16 @@ export function appointmentConfirmedHtml(opts: {
       <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
       <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
       ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
-      <p style="margin: 24px 0;">
+      ${
+        opts.meetingUrl
+          ? `<p style="margin: 24px 0;">
         <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
           Unirme a la videollamada
         </a>
       </p>
-      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>
+      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
+          : `<p style="margin: 24px 0;">Te enviaremos el enlace de la videollamada antes de la cita.</p>`
+      }
       <p style="margin-top: 24px;">Si necesitas reprogramar, responde a este correo.</p>
       <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
     </div>

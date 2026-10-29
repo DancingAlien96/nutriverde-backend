@@ -162,7 +162,8 @@ const createSchema = z.object({
   // Paquete del que descuenta la cita. Si viene, manda sobre serviceId.
   packageId: z.string().trim().min(1).optional(),
   scheduledAt: z.string().datetime("Fecha y hora requeridas"),
-  meetingUrl: meetingUrlSchema,
+  // Opcional: la cita puede crearse sin enlace y enviarlo después.
+  meetingUrl: meetingUrlSchema.optional().or(z.literal("")),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
   notes: z
     .string()
@@ -282,8 +283,8 @@ router.post("/", async (req, res, next) => {
           timezone: patient.timezone,
           scheduledAt,
           status: "SCHEDULED",
-          meetingUrl: input.meetingUrl,
-          meetingProvider: input.meetingProvider ?? "GOOGLE_MEET",
+          meetingUrl: input.meetingUrl || null,
+          meetingProvider: input.meetingUrl ? input.meetingProvider ?? "GOOGLE_MEET" : null,
           notes,
           packageId: pkg?.id ?? null,
         },
@@ -302,7 +303,7 @@ router.post("/", async (req, res, next) => {
         when: scheduledAt,
         durationMin,
         patientTimezone: patient.timezone,
-        meetingUrl: input.meetingUrl,
+        meetingUrl: input.meetingUrl || null,
       }),
     }).catch((err) => console.error("Email confirmación (manual) falló:", err));
 
@@ -373,7 +374,8 @@ router.get("/:id/slots", async (req, res, next) => {
 });
 
 const confirmSchema = z.object({
-  meetingUrl: meetingUrlSchema,
+  // Opcional: se puede confirmar sin enlace y mandarlo después.
+  meetingUrl: meetingUrlSchema.optional().or(z.literal("")),
   meetingProvider: z.enum(["GOOGLE_MEET", "ZOOM"]).optional(),
   // Obligatorio si la cita no tiene horario propuesto; opcional para ajustar.
   scheduledAt: z.string().datetime().optional(),
@@ -391,7 +393,7 @@ router.post("/:id/confirm", async (req, res, next) => {
 
     const updated = await confirmAppointment({
       appointmentId: req.params.id,
-      meetingUrl,
+      meetingUrl: meetingUrl || null,
       meetingProvider,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     });
