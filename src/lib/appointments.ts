@@ -168,15 +168,53 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/** Confirmación final de la cita con el enlace de la videollamada. */
-/** Bloque del correo para una cita presencial (sin enlace). */
+/** Firma común de los correos a pacientes. */
+const SIGNATURE = `
+      <p style="margin-top: 28px; margin-bottom: 0; font-weight: 600; letter-spacing: 0.08em; color: #687445;">PLENHA</p>
+      <p style="margin-top: 2px; color: #6b7280; font-size: 13px;">Build habits. Live fully.</p>`;
+
+/** Bloque presencial (texto de la nutricionista): documentos por adelantado y puntualidad. */
 function inPersonBlock(): string {
   return `
-      <p style="margin: 20px 0 8px;"><strong>Tu cita es presencial.</strong></p>
-      <p>Un día antes te enviaremos un recordatorio con la dirección, las indicaciones para llegar y lo que necesitas traer.</p>
-      <p>Te pedimos llegar unos 10 minutos antes de la hora.</p>`;
+      <p><strong>Antes de tu consulta:</strong> si cuentas con resultados de laboratorio recientes, evaluaciones médicas o recetas relevantes para tu atención nutricional, puedes enviarlos con anticipación.</p>
+      <p>Te recomendamos llegar puntualmente. Si necesitas reprogramar tu cita, te agradeceremos avisarnos con la mayor anticipación posible.</p>`;
 }
 
+/** Bloque virtual (texto de la nutricionista): documentos a mano, conexión y puntualidad. */
+function virtualBlock(meetingUrl: string | null): string {
+  const link = meetingUrl
+    ? `
+      <p style="margin: 24px 0;">
+        <a href="${escapeHtml(meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
+          Unirme a la videollamada
+        </a>
+      </p>
+      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(meetingUrl)}</p>`
+    : `
+      <p style="margin: 24px 0;">Te enviaremos el enlace de la videollamada antes de la cita.</p>`;
+  return `${link}
+      <p><strong>Antes de tu consulta:</strong> si cuentas con resultados de laboratorio recientes, evaluaciones médicas o recetas relevantes para tu atención nutricional, puedes tenerlos a mano el día de la cita.</p>
+      <p>Te recomendamos conectarte puntualmente desde un lugar tranquilo y con buena conexión a internet.</p>
+      <p>Si necesitas reprogramar tu cita, te agradeceremos avisarnos con la mayor anticipación posible.</p>`;
+}
+
+function fmtWhen(d: Date, tz: string): string {
+  return d.toLocaleString("es-GT", {
+    timeZone: tz,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * Confirmación de la cita. Textos de la nutricionista (octubre 2026), uno
+ * para presencial y otro para online; se les añaden los datos concretos
+ * (servicio, fecha, zona horaria y, si es virtual, el enlace).
+ */
 export function appointmentConfirmedHtml(opts: {
   name: string;
   service: string;
@@ -186,45 +224,21 @@ export function appointmentConfirmedHtml(opts: {
   meetingUrl: string | null;
   modality?: Modality;
 }): string {
-  const gtTime = opts.when.toLocaleString("es-GT", {
-    timeZone: "America/Guatemala",
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const localTime = opts.when.toLocaleString("es-GT", {
-    timeZone: opts.patientTimezone,
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const inPerson = opts.modality === "IN_PERSON";
   const sameTz = opts.patientTimezone === "America/Guatemala";
   return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
-      <h1 style="color: #687445; font-size: 22px;">¡Tu cita está confirmada, ${escapeHtml(opts.name)}!</h1>
-      <p><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
-      <p><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(gtTime)}</p>
-      ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(localTime)}</p>`}
-      ${
-        opts.modality === "IN_PERSON"
-          ? inPersonBlock()
-          : opts.meetingUrl
-            ? `<p style="margin: 24px 0;">
-        <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
-          Unirme a la videollamada
-        </a>
-      </p>
-      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
-            : `<p style="margin: 24px 0;">Te enviaremos el enlace de la videollamada antes de la cita.</p>`
-      }
-      <p style="margin-top: 24px;">Si necesitas reprogramar, responde a este correo.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827; line-height: 1.55;">
+      <h1 style="color: #687445; font-size: 22px;">¡Hola, ${escapeHtml(opts.name)}!</h1>
+      <p>¡Tu cita nutricional${inPerson ? "" : " online"} en PLENHA está confirmada! Gracias por confiar en nosotros para acompañarte en tu proceso de bienestar.</p>
+      <div style="background: #f4f6ee; border-radius: 12px; padding: 14px 16px; margin: 20px 0;">
+        <p style="margin: 0 0 6px;"><strong>Servicio:</strong> ${escapeHtml(opts.service)} (${opts.durationMin} min)</p>
+        <p style="margin: 0 0 6px;"><strong>Modalidad:</strong> ${inPerson ? "Presencial" : "Online (videollamada)"}</p>
+        <p style="margin: 0;"><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(fmtWhen(opts.when, "America/Guatemala"))}</p>
+        ${sameTz ? "" : `<p style="margin: 6px 0 0;"><strong>En tu zona horaria:</strong> ${escapeHtml(fmtWhen(opts.when, opts.patientTimezone))}</p>`}
+      </div>
+      ${inPerson ? inPersonBlock() : virtualBlock(opts.meetingUrl)}
+      <p style="margin-top: 20px;">¡Nos vemos pronto!</p>
+      ${SIGNATURE}
     </div>
   `;
 }
@@ -253,7 +267,7 @@ export function appointmentCanceledHtml(opts: {
       <p style="background: #f3f4f6; border-radius: 8px; padding: 12px 16px; color: #6b7280; text-decoration: line-through;">${escapeHtml(localTime)}</p>
       ${opts.reason ? `<p><strong>Motivo:</strong> ${escapeHtml(opts.reason)}</p>` : ""}
       <p>Si quieres reprogramarla, responde este correo o escríbenos y te buscamos un nuevo horario.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+      ${SIGNATURE}
     </div>
   `;
 }
@@ -291,20 +305,9 @@ export function appointmentRescheduledHtml(opts: {
       }
       <p><strong>Nueva fecha y hora (Guatemala):</strong> ${escapeHtml(fmt(opts.when, "America/Guatemala"))}</p>
       ${sameTz ? "" : `<p><strong>En tu zona horaria:</strong> ${escapeHtml(fmt(opts.when, opts.patientTimezone))}</p>`}
-      ${
-        opts.modality === "IN_PERSON"
-          ? inPersonBlock()
-          : opts.meetingUrl
-            ? `<p style="margin: 24px 0;">
-        <a href="${escapeHtml(opts.meetingUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 999px; font-weight: 500;">
-          Unirme a la videollamada
-        </a>
-      </p>
-      <p style="font-size: 13px; color: #6b7280;">Si el botón no funciona, copia este enlace:<br/>${escapeHtml(opts.meetingUrl)}</p>`
-            : `<p>Te enviaremos el enlace de la videollamada antes de la cita.</p>`
-      }
-      <p style="margin-top: 24px;">Si el nuevo horario no te funciona, responde a este correo.</p>
-      <p style="margin-top: 32px; color: #6b7280; font-size: 13px;">— Plenha Nutrition</p>
+      ${opts.modality === "IN_PERSON" ? inPersonBlock() : virtualBlock(opts.meetingUrl)}
+      <p style="margin-top: 20px;">¡Nos vemos pronto!</p>
+      ${SIGNATURE}
     </div>
   `;
 }
