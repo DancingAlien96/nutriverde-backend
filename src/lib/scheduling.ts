@@ -102,7 +102,10 @@ export async function getAvailableSlots(opts: SlotOptions): Promise<Date[]> {
 
   for (const w of windows) {
     let m = w.startMinute;
-    while (m + durationMin <= w.endMinute) {
+    // La hora final de la ventana es la ULTIMA HORA DE INICIO: un rango
+    // 07:30-14:00 ofrece una cita que empieza a las 14:00 aunque termine
+    // despues. Asi lo entiende la nutricionista al configurar su horario.
+    while (m <= w.endMinute) {
       const slotStart = new Date(dayStart.getTime() + m * 60_000);
       const slotEnd = new Date(slotStart.getTime() + durationMin * 60_000);
 
@@ -242,7 +245,7 @@ export async function getMonthlyAvailability(
     let hasFreeSlot = false;
     outer: for (const w of dayWindows) {
       let m = w.startMinute;
-      while (m + durationMin <= w.endMinute) {
+      while (m <= w.endMinute) {
         const slotStart = new Date(dayStart.getTime() + m * 60_000);
         const slotEnd = new Date(slotStart.getTime() + durationMin * 60_000);
         const passesLead = slotStart >= minStart;
