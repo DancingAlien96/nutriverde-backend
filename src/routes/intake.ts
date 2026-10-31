@@ -105,7 +105,7 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
     const service = await prisma.service.findUnique({
       where: { slug: parsed.serviceSlug },
     });
-    if (!service || !service.active) {
+    if (!service || !service.active || service.internal) {
       throw new HttpError(400, "Servicio no disponible.");
     }
 

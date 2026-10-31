@@ -13,7 +13,8 @@ const router = Router();
 router.get("/", async (_req, res, next) => {
   try {
     const services = await prisma.service.findMany({
-      where: { active: true },
+      // Los internos (paquetes de empresa) no se listan al público.
+      where: { active: true, internal: false },
       orderBy: { sortOrder: "asc" },
       select: {
         id: true,

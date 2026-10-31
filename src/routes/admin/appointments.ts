@@ -469,6 +469,33 @@ router.patch("/:id/invoice", async (req, res, next) => {
   }
 });
 
+/**
+ * Servicios asignables desde la agenda (incluye los internos, que no salen
+ * en la web). Cualquier rol del panel: la secretaria los necesita para
+ * "Nueva cita".
+ */
+router.get("/services", async (_req, res, next) => {
+  try {
+    const services = await prisma.service.findMany({
+      where: { active: true },
+      orderBy: [{ internal: "asc" }, { sortOrder: "asc" }],
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        durationMin: true,
+        sessions: true,
+        priceCents: true,
+        currency: true,
+        internal: true,
+      },
+    });
+    res.json({ services });
+  } catch (err) {
+    next(err);
+  }
+});
+
 async function loadSchedulable(id: string) {
   const appt = await prisma.appointment.findUnique({
     where: { id },

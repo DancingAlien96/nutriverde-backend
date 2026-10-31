@@ -59,6 +59,8 @@ const createSchema = z.object({
   billingType: z.enum(["ONE_TIME", "MONTHLY"]).default("ONE_TIME"),
   active: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
+  // Solo visible/asignable desde el panel (paquetes de empresa).
+  internal: z.boolean().optional(),
 });
 
 router.post("/", async (req, res, next) => {
@@ -101,6 +103,8 @@ router.post("/", async (req, res, next) => {
         priceUsdCents: data.priceUsdCents ?? null,
         currency: data.currency,
         durationMin: data.durationMin,
+        sessions: data.sessions,
+        internal: data.internal ?? false,
         billingType: data.billingType,
         active: data.active ?? true,
         sortOrder,
@@ -133,6 +137,8 @@ const updateSchema = z.object({
   billingType: z.enum(["ONE_TIME", "MONTHLY"]).optional(),
   active: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
+  // Solo visible/asignable desde el panel (paquetes de empresa).
+  internal: z.boolean().optional(),
 });
 
 router.put("/:id", async (req, res, next) => {

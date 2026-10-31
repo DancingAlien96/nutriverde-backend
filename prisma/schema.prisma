@@ -236,6 +236,9 @@ model Service {
   // aprobar el pago de un servicio con sessions > 1 se crea un
   // SessionPackage del que se van descontando las citas.
   sessions    Int      @default(1)
+  // Interno: no aparece en la web ni se puede comprar desde el formulario
+  // público; solo se asigna desde el panel (p. ej. paquetes para empresas).
+  internal    Boolean  @default(false)
   billingType BillingType @default(ONE_TIME)
   active      Boolean  @default(true)
   sortOrder   Int      @default(0)
