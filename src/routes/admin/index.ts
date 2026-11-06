@@ -9,6 +9,7 @@ import remindersRouter from "./reminders.js";
 import appointmentsRouter from "./appointments.js";
 import usersRouter from "./users.js";
 import dashboardRouter from "./dashboard.js";
+import packagesRouter from "./packages.js";
 import { requireFullAccess } from "../../middlewares/require-admin.js";
 
 const router = Router();
@@ -29,6 +30,7 @@ router.use("/services", requireFullAccess, servicesRouter);
 router.use("/patients", requireFullAccess, patientsRouter);
 router.use("/reminders", requireFullAccess, remindersRouter);
 router.use("/dashboard", requireFullAccess, dashboardRouter);
+router.use("/packages", requireFullAccess, packagesRouter);
 
 // Usuarios del panel: solo la nutricionista (el guard vive dentro del router).
 router.use("/users", usersRouter);

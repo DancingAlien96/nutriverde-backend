@@ -237,7 +237,7 @@ router.post("/", async (req, res, next) => {
     const durationMin = service.durationMin > 0 ? service.durationMin : 60;
 
     const scheduledAt = new Date(input.scheduledAt);
-    const ok = await isValidSlot(scheduledAt, durationMin);
+    const ok = await isValidSlot(scheduledAt, durationMin, undefined, true);
     if (!ok) {
       throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
     }
@@ -496,6 +496,41 @@ router.get("/services", async (_req, res, next) => {
   }
 });
 
+const monthParam = z.string().regex(/^\d{4}-\d{2}$/, "Formato esperado YYYY-MM");
+const dateParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato esperado YYYY-MM-DD");
+
+async function loadServiceDuration(id: string): Promise<number> {
+  const service = await prisma.service.findUnique({
+    where: { id },
+    select: { durationMin: true, active: true },
+  });
+  if (!service || !service.active) throw new HttpError(404, "Servicio no disponible.");
+  return service.durationMin > 0 ? service.durationMin : 60;
+}
+
+// Disponibilidad por servicio para "Nueva cita", en modo panel: incluye hoy
+// (horas que aún no pasan) aunque la paciente tenga prohibido el mismo día.
+router.get("/services/:id/availability", async (req, res, next) => {
+  try {
+    const durationMin = await loadServiceDuration(req.params.id);
+    const month = monthParam.parse(req.query.month);
+    res.json(await getMonthlyAvailability(month, durationMin, undefined, true));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/services/:id/slots", async (req, res, next) => {
+  try {
+    const durationMin = await loadServiceDuration(req.params.id);
+    const date = dateParam.parse(req.query.date);
+    const slots = await getAvailableSlots({ date, durationMin, staff: true });
+    res.json({ date, durationMin, slots: slots.map((s) => s.toISOString()) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 async function loadSchedulable(id: string) {
   const appt = await prisma.appointment.findUnique({
     where: { id },
@@ -515,7 +550,7 @@ router.get("/:id/availability", async (req, res, next) => {
       .regex(/^\d{4}-\d{2}$/, "Formato esperado YYYY-MM")
       .parse(req.query.month);
 
-    const data = await getMonthlyAvailability(month, appt.durationMin, appt.id);
+    const data = await getMonthlyAvailability(month, appt.durationMin, appt.id, true);
     res.json(data);
   } catch (err) {
     next(err);
@@ -535,6 +570,7 @@ router.get("/:id/slots", async (req, res, next) => {
       date,
       durationMin: appt.durationMin,
       excludeAppointmentId: appt.id,
+      staff: true,
     });
 
     res.json({
@@ -773,7 +809,7 @@ router.post("/:id/reschedule", async (req, res, next) => {
     }
 
     const when = new Date(scheduledAt);
-    const ok = await isValidSlot(when, appt.durationMin, appt.id);
+    const ok = await isValidSlot(when, appt.durationMin, appt.id, true);
     if (!ok) throw new HttpError(409, "Ese horario ya no está disponible. Elige otro.");
 
     const finalModality = modality ?? appt.modality;

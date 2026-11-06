@@ -61,10 +61,16 @@ export interface SlotOptions {
   date: string; // YYYY-MM-DD en hora GT
   durationMin: number;
   excludeAppointmentId?: string;
+  /**
+   * Modo panel (secretaria/nutricionista): se ignoran "permitir mismo día"
+   * y el margen mínimo de anticipación, pensados para la paciente que se
+   * agenda sola. Solo se exige que la hora no haya pasado todavía.
+   */
+  staff?: boolean;
 }
 
 export async function getAvailableSlots(opts: SlotOptions): Promise<Date[]> {
-  const { date, durationMin, excludeAppointmentId } = opts;
+  const { date, durationMin, excludeAppointmentId, staff = false } = opts;
   const { start: dayStart, end: dayEnd, dayOfWeek } = businessDateToUtcRange(date);
 
   const [windows, blocks, taken, settings] = await Promise.all([
@@ -92,11 +98,14 @@ export async function getAvailableSlots(opts: SlotOptions): Promise<Date[]> {
   if (windows.length === 0) return [];
 
   // Si está prohibido reservar mismo día y la fecha es hoy → no hay slots
-  if (!settings.allowSameDayBooking && isSameBusinessDay(dayStart)) {
+  // (solo aplica a la paciente; el panel siempre puede agendar hoy).
+  if (!staff && !settings.allowSameDayBooking && isSameBusinessDay(dayStart)) {
     return [];
   }
 
-  const minStart = new Date(Date.now() + settings.minLeadMinutes * 60_000);
+  const minStart = staff
+    ? new Date()
+    : new Date(Date.now() + settings.minLeadMinutes * 60_000);
 
   const slots: Date[] = [];
 
@@ -171,6 +180,7 @@ export async function getMonthlyAvailability(
   monthStr: string,
   durationMin: number,
   excludeAppointmentId?: string,
+  staff = false,
 ): Promise<MonthAvailability> {
   const match = /^(\d{4})-(\d{2})$/.exec(monthStr);
   if (!match) throw new Error(`Mes inválido: ${monthStr}`);
@@ -207,7 +217,9 @@ export async function getMonthlyAvailability(
   }
   const workingDow = Array.from(windowsByDow.keys()).sort();
 
-  const minStart = new Date(Date.now() + settings.minLeadMinutes * 60_000);
+  const minStart = staff
+    ? new Date()
+    : new Date(Date.now() + settings.minLeadMinutes * 60_000);
   const days: Record<string, DayStatus> = {};
 
   // Iterar fechas del mes
@@ -228,7 +240,8 @@ export async function getMonthlyAvailability(
     const dayEnd = new Date(cursor.getTime() + 24 * 60 * 60_000);
 
     // Si la config prohíbe mismo día y este día es hoy → marcar FULL y saltar
-    if (!settings.allowSameDayBooking && isSameBusinessDay(dayStart)) {
+    // (solo paciente; el panel siempre puede agendar hoy)
+    if (!staff && !settings.allowSameDayBooking && isSameBusinessDay(dayStart)) {
       days[dateStr] = "FULL";
       cursor = new Date(cursor.getTime() + 24 * 60 * 60_000);
       continue;
@@ -290,6 +303,7 @@ export async function isValidSlot(
   scheduledAt: Date,
   durationMin: number,
   excludeAppointmentId?: string,
+  staff = false,
 ): Promise<boolean> {
   const local = new Date(scheduledAt.getTime() - BUSINESS_OFFSET_MIN * 60_000);
   const y = local.getUTCFullYear();
@@ -301,6 +315,7 @@ export async function isValidSlot(
     date: dateStr,
     durationMin,
     excludeAppointmentId,
+    staff,
   });
 
   return slots.some((s) => s.getTime() === scheduledAt.getTime());

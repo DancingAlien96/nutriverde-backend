@@ -117,7 +117,8 @@ export async function confirmAppointment(input: ConfirmAppointmentInput) {
 
   // Revalidamos el slot (excluyendo esta misma cita): otra cita pudo haberse
   // confirmado en el mismo hueco mientras tanto.
-  const slotOk = await isValidSlot(when, appt.durationMin, appt.id);
+  // Confirma siempre alguien del panel: modo staff (puede ser hoy mismo).
+  const slotOk = await isValidSlot(when, appt.durationMin, appt.id, true);
   if (!slotOk) {
     throw new HttpError(
       409,
