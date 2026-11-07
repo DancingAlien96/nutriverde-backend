@@ -195,6 +195,36 @@ router.get("/:id", async (req, res, next) => {
     // Paquetes de sesiones con su uso (para el bloque del expediente).
     const packages = await packagesForPatient(patient.id);
 
+    // La secretaria recibe solo ficha de contacto, citas (sin pago ni plan)
+    // y paquetes: nada clínico, nada de dinero, aunque el panel ya lo oculte.
+    if (req.admin!.role === "SECRETARY") {
+      const {
+        id, fullName, email, documentId, documentType, phone, whatsappNotify,
+        timezone, createdAt, updatedAt,
+      } = patient;
+      res.json({
+        patient: {
+          id, fullName, email, documentId, documentType, phone, whatsappNotify,
+          timezone, createdAt, updatedAt,
+          appointments: patient.appointments.map(({ payment, nutritionPlan, ...a }) => {
+            void payment;
+            void nutritionPlan;
+            return { ...a, payment: null, nutritionPlan: null };
+          }),
+          packages,
+          intakeForms: [],
+          payments: [],
+          nutritionPlans: [],
+          diagnoses: [],
+          trainings: [],
+          measurements: [],
+          mealPlans: [],
+        },
+        stats: { ...stats, totalPaidCents: 0 },
+      });
+      return;
+    }
+
     res.json({ patient: { ...patient, packages }, stats });
   } catch (err) {
     next(err);
@@ -279,9 +309,21 @@ router.delete("/:id", requireRole("NUTRITIONIST"), async (req, res, next) => {
   }
 });
 
+/** Campos que la secretaria puede editar: solo contacto, nunca lo clínico. */
+const SECRETARY_EDITABLE = new Set(["fullName", "phone", "whatsappNotify", "timezone"]);
+
 router.put("/:id", async (req, res, next) => {
   try {
-    const patch = updateSchema.parse(req.body);
+    const parsed = updateSchema.parse(req.body);
+    const patch =
+      req.admin!.role === "SECRETARY"
+        ? Object.fromEntries(
+            Object.entries(parsed).filter(([k]) => SECRETARY_EDITABLE.has(k)),
+          ) as typeof parsed
+        : parsed;
+    if (req.admin!.role === "SECRETARY" && Object.keys(patch).length === 0) {
+      throw new HttpError(403, "Solo puedes editar nombre, teléfono, WhatsApp y zona horaria.");
+    }
     const existing = await prisma.patient.findUnique({
       where: { id: req.params.id },
     });
