@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
-import { requireAdmin } from "../../middlewares/require-admin.js";
+import { requireAdmin, requireRole } from "../../middlewares/require-admin.js";
 import { packagesForPatient } from "../../lib/packages.js";
 import { buildExpedientePdf } from "../../lib/expediente-pdf.js";
 import {
@@ -35,10 +35,12 @@ router.get("/", async (req, res, next) => {
         }
       : undefined;
 
-    const patients = await prisma.patient.findMany({
+    // Lista tipo tabla: datos básicos + última cita, última medición y
+    // conteos, para ordenar y paginar en el panel.
+    const rows = await prisma.patient.findMany({
       where,
       orderBy: { updatedAt: "desc" },
-      take: 100,
+      take: 1000,
       select: {
         id: true,
         fullName: true,
@@ -46,6 +48,9 @@ router.get("/", async (req, res, next) => {
         documentId: true,
         documentType: true,
         phone: true,
+        birthDate: true,
+        heightCm: true,
+        timezone: true,
         createdAt: true,
         updatedAt: true,
         _count: {
@@ -55,8 +60,26 @@ router.get("/", async (req, res, next) => {
             nutritionPlans: true,
           },
         },
+        appointments: {
+          where: { scheduledAt: { not: null }, status: { not: "CANCELED" } },
+          orderBy: { scheduledAt: "desc" },
+          take: 1,
+          select: { scheduledAt: true },
+        },
+        measurements: {
+          orderBy: { measuredAt: "desc" },
+          take: 1,
+          select: { measuredAt: true, weightKg: true },
+        },
       },
     });
+
+    const patients = rows.map(({ appointments, measurements, ...p }) => ({
+      ...p,
+      lastAppointmentAt: appointments[0]?.scheduledAt ?? null,
+      lastMeasurementAt: measurements[0]?.measuredAt ?? null,
+      lastWeightKg: measurements[0]?.weightKg ?? null,
+    }));
 
     res.json({ patients });
   } catch (err) {
@@ -201,6 +224,37 @@ const updateSchema = z.object({
   waterCoffeeNotes: nullableShortText,
   dislikedFoods: nullableText,
   weekendSpots: nullableText,
+});
+
+/**
+ * Elimina una paciente con todo su historial: citas, pagos, paquetes,
+ * formularios, mediciones, diagnósticos, entrenamientos, planes. Solo la
+ * nutricionista. Los archivos subidos (comprobantes, PDFs) se quedan en
+ * disco; no se borran aquí.
+ */
+router.delete("/:id", requireRole("NUTRITIONIST"), async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const patient = await prisma.patient.findUnique({ where: { id }, select: { id: true } });
+    if (!patient) throw new HttpError(404, "Paciente no encontrada.");
+
+    await prisma.$transaction(async (tx) => {
+      await tx.nutritionPlan.deleteMany({ where: { patientId: id } });
+      await tx.payment.deleteMany({ where: { patientId: id } });
+      await tx.appointment.deleteMany({ where: { patientId: id } });
+      await tx.sessionPackage.deleteMany({ where: { patientId: id } });
+      await tx.intakeForm.deleteMany({ where: { patientId: id } });
+      await tx.anthropometricMeasurement.deleteMany({ where: { patientId: id } });
+      await tx.patientDiagnosis.deleteMany({ where: { patientId: id } });
+      await tx.patientTraining.deleteMany({ where: { patientId: id } });
+      await tx.mealPlan.deleteMany({ where: { patientId: id } });
+      await tx.patient.delete({ where: { id } });
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.put("/:id", async (req, res, next) => {
