@@ -71,15 +71,37 @@ router.get("/", async (req, res, next) => {
           take: 1,
           select: { measuredAt: true, weightKg: true },
         },
+        // Paquetes con sus citas no canceladas, para decir cuántas sesiones
+        // lleva y cuántas le faltan en la tabla.
+        packages: {
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            totalSessions: true,
+            service: { select: { name: true } },
+            appointments: { where: { status: { not: "CANCELED" } }, select: { id: true } },
+          },
+        },
       },
     });
 
-    const patients = rows.map(({ appointments, measurements, ...p }) => ({
-      ...p,
-      lastAppointmentAt: appointments[0]?.scheduledAt ?? null,
-      lastMeasurementAt: measurements[0]?.measuredAt ?? null,
-      lastWeightKg: measurements[0]?.weightKg ?? null,
-    }));
+    const patients = rows.map(({ appointments, measurements, packages, ...p }) => {
+      const pkgs = packages.map((k) => ({
+        id: k.id,
+        serviceName: k.service.name,
+        totalSessions: k.totalSessions,
+        usedSessions: k.appointments.length,
+        remaining: Math.max(0, k.totalSessions - k.appointments.length),
+      }));
+      return {
+        ...p,
+        lastAppointmentAt: appointments[0]?.scheduledAt ?? null,
+        lastMeasurementAt: measurements[0]?.measuredAt ?? null,
+        lastWeightKg: measurements[0]?.weightKg ?? null,
+        packages: pkgs,
+        sessionsRemaining: pkgs.reduce((a, k) => a + k.remaining, 0),
+      };
+    });
 
     res.json({ patients });
   } catch (err) {
