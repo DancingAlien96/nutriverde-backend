@@ -9,7 +9,6 @@ import remindersRouter from "./reminders.js";
 import appointmentsRouter from "./appointments.js";
 import usersRouter from "./users.js";
 import dashboardRouter from "./dashboard.js";
-import packagesRouter from "./packages.js";
 import { requireFullAccess } from "../../middlewares/require-admin.js";
 
 const router = Router();
@@ -25,12 +24,12 @@ router.use("/appointments", appointmentsRouter);
 // bancarios, disponibilidad, servicios, pacientes/expedientes y recordatorios.
 router.use("/payments", requireFullAccess, paymentsRouter);
 router.use("/payment-settings", requireFullAccess, paymentSettingsRouter);
-router.use("/availability", requireFullAccess, availabilityRouter);
+// Disponibilidad y pacientes: también la secretaria (lo clínico se protege dentro de patients).
+router.use("/availability", availabilityRouter);
 router.use("/services", requireFullAccess, servicesRouter);
-router.use("/patients", requireFullAccess, patientsRouter);
+router.use("/patients", patientsRouter);
 router.use("/reminders", requireFullAccess, remindersRouter);
 router.use("/dashboard", requireFullAccess, dashboardRouter);
-router.use("/packages", requireFullAccess, packagesRouter);
 
 // Usuarios del panel: solo la nutricionista (el guard vive dentro del router).
 router.use("/users", usersRouter);
