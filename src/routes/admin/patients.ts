@@ -2,8 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
-import { requireAdmin, requireFullAccess, requireRole } from "../../middlewares/require-admin.js";
+import { requireAdmin, requireRole } from "../../middlewares/require-admin.js";
 import { packagesForPatient } from "../../lib/packages.js";
+import { chargeInclude, summarizeCharge } from "../../lib/charges.js";
 import { buildExpedientePdf } from "../../lib/expediente-pdf.js";
 import {
   DOCUMENT_TYPES,
@@ -82,10 +83,19 @@ router.get("/", async (req, res, next) => {
             appointments: { where: { status: { not: "CANCELED" } }, select: { id: true } },
           },
         },
+        // Cobros del panel, para el saldo pendiente de la tabla.
+        charges: {
+          where: { currency: "GTQ" },
+          select: {
+            priceCents: true,
+            appointment: { select: { status: true } },
+            payments: { select: { amountCents: true } },
+          },
+        },
       },
     });
 
-    const patients = rows.map(({ appointments, measurements, packages, ...p }) => {
+    const patients = rows.map(({ appointments, measurements, packages, charges, ...p }) => {
       const pkgs = packages.map((k) => ({
         id: k.id,
         serviceName: k.service.name,
@@ -100,6 +110,14 @@ router.get("/", async (req, res, next) => {
         lastWeightKg: measurements[0]?.weightKg ?? null,
         packages: pkgs,
         sessionsRemaining: pkgs.reduce((a, k) => a + k.remaining, 0),
+        // Lo que debe en quetzales (la cita suelta cancelada no cuenta).
+        balanceCents: charges
+          .filter((c) => c.appointment?.status !== "CANCELED")
+          .reduce(
+            (sum, c) =>
+              sum + Math.max(0, c.priceCents - c.payments.reduce((x, y) => x + y.amountCents, 0)),
+            0,
+          ),
       };
     });
 
@@ -120,8 +138,9 @@ router.get("/:id", async (req, res, next) => {
         appointments: {
           orderBy: { createdAt: "desc" },
           include: {
-            service: { select: { id: true, name: true, slug: true } },
+            service: { select: { id: true, name: true, slug: true, priceCents: true, currency: true } },
             package: { select: { id: true, totalSessions: true } },
+            charge: { include: chargeInclude },
             payment: {
               select: {
                 id: true,
@@ -178,6 +197,24 @@ router.get("/:id", async (req, res, next) => {
 
     if (!patient) throw new HttpError(404, "Paciente no encontrado.");
 
+    // Paquetes de sesiones con su uso y su cobro (para el bloque del expediente).
+    const packages = await packagesForPatient(patient.id);
+
+    // Cobro del panel por cita suelta (las de paquete se cobran en el paquete).
+    const appointments = patient.appointments.map(({ charge, ...a }) => ({
+      ...a,
+      charge: charge ? summarizeCharge(charge) : null,
+      chargeable: !a.payment && !a.packageId,
+    }));
+
+    // Dinero de los cobros del panel: lo abonado y lo que falta.
+    const panelCharges = [
+      ...packages.map((p) => p.charge),
+      ...appointments.filter((a) => a.status !== "CANCELED").map((a) => a.charge),
+    ].filter((c): c is NonNullable<typeof c> => !!c && c.currency === "GTQ");
+    const chargePaidCents = panelCharges.reduce((sum, c) => sum + c.paidCents, 0);
+    const balanceCents = panelCharges.reduce((sum, c) => sum + c.balanceCents, 0);
+
     // Estadísticas rápidas
     const stats = {
       totalAppointments: patient.appointments.length,
@@ -187,45 +224,15 @@ router.get("/:id", async (req, res, next) => {
       scheduledAppointments: patient.appointments.filter(
         (a) => a.status === "SCHEDULED",
       ).length,
-      totalPaidCents: patient.payments
-        .filter((p) => p.status === "APPROVED")
-        .reduce((sum, p) => sum + p.amountCents, 0),
+      // Comprobantes aprobados de la web + abonos registrados en el panel.
+      totalPaidCents:
+        patient.payments
+          .filter((p) => p.status === "APPROVED")
+          .reduce((sum, p) => sum + p.amountCents, 0) + chargePaidCents,
+      balanceCents,
     };
 
-    // Paquetes de sesiones con su uso (para el bloque del expediente).
-    const packages = await packagesForPatient(patient.id);
-
-    // La secretaria recibe solo ficha de contacto, citas (sin pago ni plan)
-    // y paquetes: nada clínico, nada de dinero, aunque el panel ya lo oculte.
-    if (req.admin!.role === "SECRETARY") {
-      const {
-        id, fullName, email, documentId, documentType, phone, whatsappNotify,
-        timezone, createdAt, updatedAt,
-      } = patient;
-      res.json({
-        patient: {
-          id, fullName, email, documentId, documentType, phone, whatsappNotify,
-          timezone, createdAt, updatedAt,
-          appointments: patient.appointments.map(({ payment, nutritionPlan, ...a }) => {
-            void payment;
-            void nutritionPlan;
-            return { ...a, payment: null, nutritionPlan: null };
-          }),
-          packages,
-          intakeForms: [],
-          payments: [],
-          nutritionPlans: [],
-          diagnoses: [],
-          trainings: [],
-          measurements: [],
-          mealPlans: [],
-        },
-        stats: { ...stats, totalPaidCents: 0 },
-      });
-      return;
-    }
-
-    res.json({ patient: { ...patient, packages }, stats });
+    res.json({ patient: { ...patient, appointments, packages }, stats });
   } catch (err) {
     next(err);
   }
@@ -280,17 +287,22 @@ const updateSchema = z.object({
 
 /**
  * Elimina una paciente con todo su historial: citas, pagos, paquetes,
- * formularios, mediciones, diagnósticos, entrenamientos, planes. Solo la
- * nutricionista. Los archivos subidos (comprobantes, PDFs) se quedan en
- * disco; no se borran aquí.
+ * formularios, mediciones, diagnósticos, entrenamientos, planes. Lo pueden
+ * hacer la nutricionista y la secretaria; si lo hace otra persona, a la
+ * nutricionista le llega un aviso porque no se puede deshacer. Los archivos
+ * subidos (comprobantes, PDFs) se quedan en disco; no se borran aquí.
  */
-router.delete("/:id", requireRole("NUTRITIONIST"), async (req, res, next) => {
+router.delete("/:id", requireRole("NUTRITIONIST", "SECRETARY"), async (req, res, next) => {
   try {
     const id = req.params.id;
-    const patient = await prisma.patient.findUnique({ where: { id }, select: { id: true } });
+    const patient = await prisma.patient.findUnique({
+      where: { id },
+      select: { id: true, fullName: true, email: true },
+    });
     if (!patient) throw new HttpError(404, "Paciente no encontrada.");
 
     await prisma.$transaction(async (tx) => {
+      await tx.charge.deleteMany({ where: { patientId: id } });
       await tx.nutritionPlan.deleteMany({ where: { patientId: id } });
       await tx.payment.deleteMany({ where: { patientId: id } });
       await tx.appointment.deleteMany({ where: { patientId: id } });
@@ -303,27 +315,58 @@ router.delete("/:id", requireRole("NUTRITIONIST"), async (req, res, next) => {
       await tx.patient.delete({ where: { id } });
     });
 
+    void notifyPatientDeleted(req.admin!, patient);
+
     res.json({ ok: true });
   } catch (err) {
     next(err);
   }
 });
 
-/** Campos que la secretaria puede editar: solo contacto, nunca lo clínico. */
-const SECRETARY_EDITABLE = new Set(["fullName", "phone", "whatsappNotify", "timezone"]);
+/**
+ * Aviso a la nutricionista cuando otra persona borra a una paciente. Se
+ * llama con `void`: nunca debe escapar un rechazo sin manejar.
+ */
+async function notifyPatientDeleted(
+  actor: { sub: string; email: string; role: string },
+  patient: { fullName: string; email: string },
+): Promise<void> {
+  if (actor.role === "NUTRITIONIST") return;
+  try {
+    const [who, recipients] = await Promise.all([
+      prisma.adminUser.findUnique({ where: { id: actor.sub }, select: { fullName: true } }),
+      prisma.adminUser.findMany({
+        where: { active: true, role: "NUTRITIONIST", id: { not: actor.sub } },
+        select: { email: true },
+      }),
+    ]);
+    const actorName = who?.fullName ?? actor.email;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+        <h2 style="color: #687445; font-size: 20px;">${escapeHtml(actorName)} eliminó a una paciente</h2>
+        <p><strong>Paciente:</strong> ${escapeHtml(patient.fullName)} (${escapeHtml(patient.email)})</p>
+        <p>Se borró con todo su historial: citas, paquetes, cobros, formularios y datos clínicos. No se puede deshacer.</p>
+        <p style="color: #6b7280; font-size: 13px;">Aviso automático del panel de Plenha Nutrition.</p>
+      </div>
+    `;
+    await Promise.all(
+      recipients.map((r) =>
+        sendMail({
+          to: r.email,
+          subject: `${actorName} eliminó a una paciente: ${patient.fullName}`,
+          template: "patient-deleted-staff-notice",
+          html,
+        }).catch((err) => console.error("Aviso de paciente eliminada falló:", err)),
+      ),
+    );
+  } catch (err) {
+    console.error("Aviso de paciente eliminada falló:", err);
+  }
+}
 
 router.put("/:id", async (req, res, next) => {
   try {
-    const parsed = updateSchema.parse(req.body);
-    const patch =
-      req.admin!.role === "SECRETARY"
-        ? Object.fromEntries(
-            Object.entries(parsed).filter(([k]) => SECRETARY_EDITABLE.has(k)),
-          ) as typeof parsed
-        : parsed;
-    if (req.admin!.role === "SECRETARY" && Object.keys(patch).length === 0) {
-      throw new HttpError(403, "Solo puedes editar nombre, teléfono, WhatsApp y zona horaria.");
-    }
+    const patch = updateSchema.parse(req.body);
     const existing = await prisma.patient.findUnique({
       where: { id: req.params.id },
     });
@@ -365,7 +408,7 @@ const diagnosisSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/diagnoses", requireFullAccess, async (req, res, next) => {
+router.post("/:id/diagnoses", async (req, res, next) => {
   try {
     const data = diagnosisSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -378,7 +421,7 @@ router.post("/:id/diagnoses", requireFullAccess, async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/diagnoses/:id", requireFullAccess, async (req, res, next) => {
+router.delete("/:patientId/diagnoses/:id", async (req, res, next) => {
   try {
     await prisma.patientDiagnosis.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -394,7 +437,7 @@ const trainingSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/trainings", requireFullAccess, async (req, res, next) => {
+router.post("/:id/trainings", async (req, res, next) => {
   try {
     const data = trainingSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -407,7 +450,7 @@ router.post("/:id/trainings", requireFullAccess, async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/trainings/:id", requireFullAccess, async (req, res, next) => {
+router.delete("/:patientId/trainings/:id", async (req, res, next) => {
   try {
     await prisma.patientTraining.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -437,7 +480,7 @@ const measurementSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/measurements", requireFullAccess, async (req, res, next) => {
+router.post("/:id/measurements", async (req, res, next) => {
   try {
     const data = measurementSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -454,7 +497,7 @@ router.post("/:id/measurements", requireFullAccess, async (req, res, next) => {
   }
 });
 
-router.put("/:patientId/measurements/:id", requireFullAccess, async (req, res, next) => {
+router.put("/:patientId/measurements/:id", async (req, res, next) => {
   try {
     const data = measurementSchema.parse(req.body);
     const measurement = await prisma.anthropometricMeasurement.update({
@@ -470,7 +513,7 @@ router.put("/:patientId/measurements/:id", requireFullAccess, async (req, res, n
   }
 });
 
-router.delete("/:patientId/measurements/:id", requireFullAccess, async (req, res, next) => {
+router.delete("/:patientId/measurements/:id", async (req, res, next) => {
   try {
     await prisma.anthropometricMeasurement.delete({
       where: { id: req.params.id },
@@ -491,7 +534,7 @@ const mealPlanSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/meal-plans", requireFullAccess, async (req, res, next) => {
+router.post("/:id/meal-plans", async (req, res, next) => {
   try {
     const data = mealPlanSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -504,7 +547,7 @@ router.post("/:id/meal-plans", requireFullAccess, async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/meal-plans/:id", requireFullAccess, async (req, res, next) => {
+router.delete("/:patientId/meal-plans/:id", async (req, res, next) => {
   try {
     await prisma.mealPlan.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -514,7 +557,7 @@ router.delete("/:patientId/meal-plans/:id", requireFullAccess, async (req, res, 
 });
 
 // Envía el meal plan al correo registrado del paciente.
-router.post("/:patientId/meal-plans/:id/send", requireFullAccess, async (req, res, next) => {
+router.post("/:patientId/meal-plans/:id/send", async (req, res, next) => {
   try {
     const mealPlan = await prisma.mealPlan.findUnique({
       where: { id: req.params.id },
@@ -559,7 +602,7 @@ router.post("/:patientId/meal-plans/:id/send", requireFullAccess, async (req, re
 // PDF del expediente
 // ============================================================
 
-router.get("/:id/expediente.pdf", requireFullAccess, async (req, res, next) => {
+router.get("/:id/expediente.pdf", async (req, res, next) => {
   try {
     const patient = await prisma.patient.findUnique({
       where: { id: req.params.id },

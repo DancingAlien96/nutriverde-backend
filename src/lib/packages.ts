@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { chargeInclude, summarizeCharge, type ChargeSummary } from "./charges.js";
 
 /**
  * Paquetes de sesiones de una paciente con su uso. Las sesiones usadas se
@@ -14,6 +15,13 @@ export interface PackageUsage {
   remaining: number;
   createdAt: Date;
   notes: string | null;
+  /** Precio de lista del servicio (para proponerlo al registrar el cobro). */
+  listPriceCents: number;
+  currency: string;
+  /** Cobro del panel (precio acordado + abonos); null si no se registró. */
+  charge: ChargeSummary | null;
+  /** Admite cobro del panel: no se pagó con comprobante desde la web. */
+  chargeable: boolean;
 }
 
 export async function packagesForPatient(patientId: string): Promise<PackageUsage[]> {
@@ -21,8 +29,9 @@ export async function packagesForPatient(patientId: string): Promise<PackageUsag
     where: { patientId },
     orderBy: { createdAt: "desc" },
     include: {
-      service: { select: { name: true } },
+      service: { select: { name: true, priceCents: true, currency: true } },
       appointments: { where: { status: { not: "CANCELED" } }, select: { id: true } },
+      charge: { include: chargeInclude },
     },
   });
   return packages.map((p) => {
@@ -36,6 +45,10 @@ export async function packagesForPatient(patientId: string): Promise<PackageUsag
       remaining: Math.max(0, p.totalSessions - used),
       createdAt: p.createdAt,
       notes: p.notes,
+      listPriceCents: p.service.priceCents,
+      currency: p.service.currency,
+      charge: p.charge ? summarizeCharge(p.charge) : null,
+      chargeable: !p.paymentId,
     };
   });
 }

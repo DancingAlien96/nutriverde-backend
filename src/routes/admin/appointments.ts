@@ -20,6 +20,15 @@ import {
 } from "../../lib/appointments.js";
 import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../lib/scheduling.js";
 import { packageInfoForAppointments, packagesForPatient } from "../../lib/packages.js";
+import {
+  amountCentsSchema,
+  chargeLine,
+  chargeMethodSchema,
+  chargePlanSchema,
+  chargesForAppointments,
+  createChargeTx,
+  initialPaidCents,
+} from "../../lib/charges.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -64,27 +73,28 @@ router.get("/", async (req, res, next) => {
         patient: {
           select: { id: true, fullName: true, email: true, phone: true },
         },
-        service: { select: { id: true, name: true } },
-        payment: showPayment
-          ? {
-              select: {
-                id: true,
-                status: true,
-                amountCents: true,
-                currency: true,
-              },
-            }
-          : false,
+        service: { select: { id: true, name: true, priceCents: true, currency: true } },
+        // Siempre se consulta para saber si la cita ya se pagó por la web;
+        // a la secretaria no se le devuelve.
+        payment: { select: { id: true, status: true, amountCents: true, currency: true } },
+        package: { select: { paymentId: true } },
       },
     });
 
-    const pkgInfo = await packageInfoForAppointments(appointments);
+    const [pkgInfo, charges] = await Promise.all([
+      packageInfoForAppointments(appointments),
+      chargesForAppointments(appointments),
+    ]);
 
     res.json({
-      appointments: appointments.map((a) => ({
+      appointments: appointments.map(({ payment, package: pkg, ...a }) => ({
         ...a,
-        payment: "payment" in a ? a.payment : null,
+        payment: showPayment ? payment : null,
         package: pkgInfo.get(a.id) ?? null,
+        // Cobro del panel: el de la cita suelta o el de su paquete.
+        charge: charges.get(a.id) ?? null,
+        // Admite cobro del panel: no se pagó con comprobante desde la web.
+        chargeable: !payment && !pkg?.paymentId,
       })),
     });
   } catch (err) {
@@ -181,6 +191,17 @@ const createSchema = z.object({
     .refine(isUtf8, utf8Message("Las notas"))
     .optional()
     .or(z.literal("")),
+  // Precio acordado para esta paciente. Sin él, el de lista del servicio.
+  priceCents: amountCentsSchema.optional(),
+  // Cómo paga: completo (se registra el total) o por plazos (abona
+  // `paidCents` hoy, puede ser 0). Sin esto el cobro queda pendiente.
+  payment: z
+    .object({
+      plan: chargePlanSchema,
+      paidCents: amountCentsSchema.optional(),
+      method: chargeMethodSchema.default("CASH"),
+    })
+    .optional(),
 });
 
 /**
@@ -189,9 +210,10 @@ const createSchema = z.object({
  * correo), elige servicio + horario, pega el link y la cita nace ya
  * SCHEDULED. La paciente recibe el mismo correo de confirmación.
  *
- * No se crea registro de pago: el cobro de estas citas se maneja fuera del
- * sistema (o la nutricionista lo registra después). Queda anotado en `notes`
- * quién la creó para poder rastrearla.
+ * El cobro queda como Charge: precio acordado (editable al agendar) y lo
+ * que se abona hoy. Si la cita descuenta de un paquete que ya existía no se
+ * crea cobro: el del paquete ya lo cubre. Queda anotado en `notes` quién la
+ * creó para poder rastrearla.
  */
 router.post("/", async (req, res, next) => {
   try {
@@ -236,6 +258,14 @@ router.post("/", async (req, res, next) => {
     // usamos una hora por defecto.
     const durationMin = service.durationMin > 0 ? service.durationMin : 60;
 
+    // Cobro: precio acordado (por defecto el de lista) y lo que se abona hoy.
+    // No aplica si la cita descuenta de un paquete que ya existía.
+    const priceCents = input.priceCents ?? service.priceCents;
+    const paidCents = initialPaidCents(priceCents, input.payment?.plan, input.payment?.paidCents);
+    if (!pkg && paidCents > priceCents) {
+      throw new HttpError(400, "El abono no puede ser mayor que el precio.");
+    }
+
     const scheduledAt = new Date(input.scheduledAt);
     const ok = await isValidSlot(scheduledAt, durationMin, undefined, true);
     if (!ok) {
@@ -248,7 +278,7 @@ router.post("/", async (req, res, next) => {
     const stamp = `Agendada manualmente desde el panel por ${createdBy}.`;
     const notes = input.notes ? `${stamp}\n${input.notes}` : stamp;
 
-    const { patient, appointment, existed, newPackageId } = await prisma.$transaction(async (tx) => {
+    const { patient, appointment, existed, newPackageId, charge } = await prisma.$transaction(async (tx) => {
       // Recuento definitivo dentro de la transacción, con la fila del paquete
       // bloqueada: dos peticiones casi simultáneas no pueden descontar la
       // misma última sesión (la comprobación de arriba es solo para dar un
@@ -319,7 +349,24 @@ router.post("/", async (req, res, next) => {
         },
       });
 
-      return { patient, appointment, existed: !!existing, newPackageId };
+      // Cobro del paquete nuevo o de la cita suelta, con su primer abono.
+      const charge = pkg
+        ? null
+        : await createChargeTx(tx, {
+            patientId: patient.id,
+            serviceId: service.id,
+            packageId: newPackageId,
+            appointmentId: newPackageId ? null : appointment.id,
+            priceCents,
+            listPriceCents: service.priceCents,
+            currency: service.currency,
+            plan: input.payment?.plan ?? "FULL",
+            paidCents,
+            method: input.payment?.method ?? "CASH",
+            actorEmail: createdBy,
+          });
+
+      return { patient, appointment, existed: !!existing, newPackageId, charge };
     });
 
     // Correo a la paciente. Se espera el resultado para mostrarlo en pantalla:
@@ -367,12 +414,19 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    void notifyNutritionists({ actor: req.admin!, action: "created", appointmentId: appointment.id });
+    void notifyNutritionists({
+      actor: req.admin!,
+      action: "created",
+      appointmentId: appointment.id,
+      chargeNote: charge ? chargeLine(charge) : null,
+    });
 
     res.status(201).json({
       ok: true,
       appointment,
       email,
+      // Cobro creado (null si la cita descuenta de un paquete que ya existía).
+      charge,
       // Paquete creado en esta misma operación (venta de programa), si aplica.
       packageCreated: newPackageId
         ? { id: newPackageId, totalSessions: service.sessions, serviceName: service.name }

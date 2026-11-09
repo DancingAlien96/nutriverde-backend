@@ -97,26 +97,75 @@ router.get("/", async (req, res, next) => {
         }),
       ]);
 
+    // Cobros del panel: los abonos registrados en la agenda también son
+    // ingreso (por fecha del abono), y lo que falta por cobrar es el saldo.
+    const [chargePayments, openCharges] = await Promise.all([
+      prisma.chargePayment.findMany({
+        where: { paidAt: { gte: windowStart } },
+        select: {
+          amountCents: true,
+          paidAt: true,
+          charge: { select: { currency: true, service: { select: { name: true } } } },
+        },
+      }),
+      prisma.charge.findMany({
+        where: { currency: "GTQ" },
+        select: {
+          priceCents: true,
+          appointment: { select: { status: true } },
+          payments: { select: { amountCents: true } },
+        },
+      }),
+    ]);
+
+    let outstandingCents = 0;
+    let outstandingCount = 0;
+    for (const c of openCharges) {
+      if (c.appointment?.status === "CANCELED") continue;
+      const balance = c.priceCents - c.payments.reduce((sum, p) => sum + p.amountCents, 0);
+      if (balance > 0) {
+        outstandingCents += balance;
+        outstandingCount += 1;
+      }
+    }
+
+    // Todo el dinero recibido: comprobantes aprobados de la web + abonos del panel.
+    const received = [
+      ...approvedPayments
+        .filter((p) => !!p.approvedAt)
+        .map((p) => ({
+          amountCents: p.amountCents,
+          currency: p.currency,
+          at: p.approvedAt as Date,
+          service: p.service.name,
+        })),
+      ...chargePayments.map((p) => ({
+        amountCents: p.amountCents,
+        currency: p.charge.currency,
+        at: p.paidAt,
+        service: p.charge.service.name,
+      })),
+    ];
+
     // ---- Ingresos por mes (GTQ y USD por separado: no se mezclan monedas) ----
     const income = new Map(keys.map((k) => [k, { gtqCents: 0, usdCents: 0, count: 0 }]));
     const byService = new Map<string, { gtqCents: number; count: number }>();
     let incomeThisMonth = 0;
     let incomeLastMonth = 0;
-    for (const p of approvedPayments) {
-      if (!p.approvedAt) continue;
-      const bucket = income.get(monthKey(p.approvedAt));
+    for (const p of received) {
+      const bucket = income.get(monthKey(p.at));
       if (bucket) {
         if (p.currency === "USD") bucket.usdCents += p.amountCents;
         else bucket.gtqCents += p.amountCents;
         bucket.count += 1;
       }
       if (p.currency !== "USD") {
-        if (p.approvedAt >= thisMonthStart) incomeThisMonth += p.amountCents;
-        else if (p.approvedAt >= lastMonthStart) incomeLastMonth += p.amountCents;
-        const s = byService.get(p.service.name) ?? { gtqCents: 0, count: 0 };
+        if (p.at >= thisMonthStart) incomeThisMonth += p.amountCents;
+        else if (p.at >= lastMonthStart) incomeLastMonth += p.amountCents;
+        const s = byService.get(p.service) ?? { gtqCents: 0, count: 0 };
         s.gtqCents += p.amountCents;
         s.count += 1;
-        byService.set(p.service.name, s);
+        byService.set(p.service, s);
       }
     }
 
@@ -187,6 +236,8 @@ router.get("/", async (req, res, next) => {
         pendingReview,
         activePackages,
         sessionsRemaining,
+        outstandingCents,
+        outstandingCount,
       },
       incomeByMonth: keys.map((k) => ({ month: k, ...income.get(k)! })),
       appointmentsByMonth: keys.map((k) => ({ month: k, ...appts.get(k)! })),

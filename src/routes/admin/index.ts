@@ -9,6 +9,7 @@ import remindersRouter from "./reminders.js";
 import appointmentsRouter from "./appointments.js";
 import usersRouter from "./users.js";
 import dashboardRouter from "./dashboard.js";
+import chargesRouter from "./charges.js";
 import { requireFullAccess } from "../../middlewares/require-admin.js";
 
 const router = Router();
@@ -20,11 +21,17 @@ router.use("/auth", authRouter);
 // (Dentro del router se recorta lo que ve según el rol.)
 router.use("/appointments", appointmentsRouter);
 
+// Cobros y abonos de lo agendado desde el panel: cualquier rol (la
+// secretaria cobra en recepción). Editar precio y borrar abonos se limita
+// dentro del router.
+router.use("/charges", chargesRouter);
+
 // Todo lo demás es exclusivo de la nutricionista (y staff): pagos, datos
 // bancarios, disponibilidad, servicios, pacientes/expedientes y recordatorios.
 router.use("/payments", requireFullAccess, paymentsRouter);
 router.use("/payment-settings", requireFullAccess, paymentSettingsRouter);
-// Disponibilidad y pacientes: también la secretaria (lo clínico se protege dentro de patients).
+// Disponibilidad y pacientes: también la secretaria, con la sección de
+// pacientes completa (expediente clínico incluido) y permiso de eliminar.
 router.use("/availability", availabilityRouter);
 router.use("/services", requireFullAccess, servicesRouter);
 router.use("/patients", patientsRouter);

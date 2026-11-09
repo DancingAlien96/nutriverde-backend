@@ -108,7 +108,7 @@ prisma/
 
 - **AdminUser** — usuarios del panel. Roles:
   - `NUTRITIONIST` / `STAFF` — acceso completo (pagos, pacientes, expedientes, disponibilidad, servicios).
-  - `SECRETARY` — solo agenda: ve el calendario, confirma horario + link de videollamada y envía el correo de cita. Todo lo demás responde 403 y el panel solo le muestra "Appointments".
+  - `SECRETARY` — agenda (citas, cobros y abonos), disponibilidad y la sección de pacientes completa: ve y edita el expediente clínico, descarga el PDF y puede eliminar pacientes (a la nutricionista le llega un aviso). No tiene Payments, Services, Users ni el dashboard (403), y no puede cambiar un precio ya acordado ni borrar abonos.
   - Los usuarios se crean desde el panel, sección **Users** (solo la nutricionista): nombre, correo, contraseña, rol e idioma del panel (`locale`: EN o ES).
 - **Patient** — pacientes referidos
 - **Service** — Consulta Inicial (Q350), Seguimiento (Q250), Plan Premium (Q550)
@@ -116,6 +116,7 @@ prisma/
 - **Payment** — comprobante subido manualmente, aprobación manual
 - **Appointment** — cita con link de Google Meet/Zoom (opcionalmente ligada a un paquete)
 - **SessionPackage** — programa de N citas pagado de una vez (servicio con `sessions` > 1). Nace al aprobar el pago; cada cita agendada descuenta una sesión y una cancelada la devuelve. La agenda avisa al agotarse.
+- **Charge / ChargePayment** — cobro de lo agendado desde el panel: precio acordado (editable al agendar; por defecto el de lista) de una cita suelta o de un paquete, y los abonos recibidos. El saldo y el estado (pagado / parcial / sin pagar) se calculan de los abonos. Cualquier rol registra cobros y abonos (`/api/admin/charges`); cambiar el precio ya acordado o borrar un abono es solo de nutricionista/staff. Los abonos cuentan como ingreso en el dashboard.
 - **AvailabilitySlot** / **AvailabilityBlock** — disponibilidad de la nutricionista
 - **NutritionPlan** — PDF del plan enviado tras la consulta
 - **EmailLog** — auditoría de correos enviados

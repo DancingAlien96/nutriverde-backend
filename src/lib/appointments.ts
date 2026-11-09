@@ -335,6 +335,8 @@ export async function notifyNutritionists(opts: {
   appointmentId: string;
   reason?: string | null;
   previous?: Date | null;
+  /** Resumen del cobro (precio, pagado, saldo) al agendar una cita nueva. */
+  chargeNote?: string | null;
 }): Promise<void> {
   if (opts.actor.role === "NUTRITIONIST") return;
   // Se llama con `void`: nada de aquí puede escapar como rechazo sin manejar.
@@ -351,6 +353,8 @@ async function notifyNutritionistsUnsafe(opts: {
   appointmentId: string;
   reason?: string | null;
   previous?: Date | null;
+  /** Resumen del cobro (precio, pagado, saldo) al agendar una cita nueva. */
+  chargeNote?: string | null;
 }): Promise<void> {
   const [appt, actor, recipients] = await Promise.all([
     prisma.appointment.findUnique({
@@ -385,6 +389,7 @@ async function notifyNutritionistsUnsafe(opts: {
     meetingUrl: appt.meetingUrl,
     modality: appt.modality,
     reason: opts.reason ?? null,
+    chargeNote: opts.chargeNote ?? null,
     panelUrl: `${env.PUBLIC_BASE_URL}/admin/citas`,
   });
 
@@ -421,6 +426,7 @@ function staffNoticeHtml(opts: {
   meetingUrl: string | null;
   modality: Modality;
   reason: string | null;
+  chargeNote: string | null;
   panelUrl: string;
 }): string {
   return `
@@ -434,6 +440,7 @@ function staffNoticeHtml(opts: {
         ${opts.when ? `<li><strong>Fecha y hora (Guatemala):</strong> ${escapeHtml(fmtGtLong(opts.when))}</li>` : "<li><strong>Fecha y hora:</strong> pendiente</li>"}
         ${opts.modality === "IN_PERSON" ? "" : opts.meetingUrl ? `<li><strong>Enlace:</strong> ${escapeHtml(opts.meetingUrl)}</li>` : "<li><strong>Enlace:</strong> aún sin enlace</li>"}
         ${opts.reason ? `<li><strong>Motivo:</strong> ${escapeHtml(opts.reason)}</li>` : ""}
+        ${opts.chargeNote ? `<li><strong>Cobro:</strong> ${escapeHtml(opts.chargeNote)}</li>` : ""}
       </ul>
       <p style="margin: 24px 0;">
         <a href="${escapeHtml(opts.panelUrl)}" style="display: inline-block; background: #687445; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 999px; font-weight: 500;">Ver la agenda</a>
