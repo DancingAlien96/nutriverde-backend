@@ -45,10 +45,22 @@ function ensureConfigured(): boolean {
 }
 
 /**
- * Un endpoint push valido es una URL https de un servicio publico (FCM,
- * Mozilla, Apple, Windows...). Se rechazan direcciones IP, localhost y
- * nombres internos para que una cuenta del panel no pueda usar el servidor
- * como puente hacia la red interna (SSRF). Se valida al suscribir y otra vez
+ * Servicios push de los navegadores que usa el personal: Chrome, Edge,
+ * Brave, Samsung y Opera (FCM), Firefox (Mozilla), Safari e iPhone (Apple)
+ * y Edge/Windows (WNS). Se compara el host exacto o como subdominio.
+ */
+const PUSH_SERVICE_HOSTS = [
+  "fcm.googleapis.com",
+  "push.services.mozilla.com",
+  "push.apple.com",
+  "notify.windows.com",
+];
+
+/**
+ * Un endpoint push valido es una URL https de uno de esos servicios. Asi
+ * una cuenta del panel no puede registrar una direccion propia y usar el
+ * servidor como puente hacia otras redes (SSRF), ni siquiera con un nombre
+ * publico que resuelva a una IP interna. Se valida al suscribir y otra vez
  * antes de enviar.
  */
 export function isAllowedPushEndpoint(endpoint: string): boolean {
@@ -61,12 +73,7 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
   if (url.protocol !== "https:") return false;
   if (url.username || url.password) return false;
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
-  // IPv4/IPv6 literales: los servicios push usan nombres de dominio.
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith("[") || host.includes(":")) return false;
-  // Debe ser un nombre con al menos un punto (nada de hosts internos de una palabra).
-  if (!host.includes(".")) return false;
-  return true;
+  return PUSH_SERVICE_HOSTS.some((h) => host === h || host.endsWith("." + h));
 }
 
 type SubscriptionRow = { id: string; endpoint: string; p256dh: string; auth: string; createdAt: Date };

@@ -22,7 +22,7 @@ const endpointField = z
   .string()
   .url()
   .max(500)
-  .refine(isAllowedPushEndpoint, "El endpoint debe ser una URL https de un servicio push público.");
+  .refine(isAllowedPushEndpoint, "El endpoint debe ser una URL https de un servicio push conocido (Google, Mozilla, Apple o Microsoft).");
 
 const subscriptionSchema = z.object({
   endpoint: endpointField,
