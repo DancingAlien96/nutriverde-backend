@@ -103,13 +103,61 @@ router.get("/", async (req, res, next) => {
 });
 
 /**
- * Citas con pago aprobado que todavía no están agendadas: o la paciente aún
- * no eligió horario (PAYMENT_APPROVED) o propuso uno y falta confirmarlo con
- * el link de la videollamada (PENDING_CONFIRMATION). Es la "bandeja" de la
- * secretaria.
+ * Bandeja "por agendar" de la secretaria. Dos listas:
+ * - `appointments`: citas con pago aprobado que todavía no están agendadas:
+ *   o la paciente aún no eligió horario (PAYMENT_APPROVED) o propuso uno y
+ *   falta confirmarlo con el link de la videollamada (PENDING_CONFIRMATION).
+ * - `packages`: paquetes con sesiones restantes cuya siguiente cita nadie ha
+ *   agendado (no tienen una cita futura ni una esperando horario). Una cita
+ *   SCHEDULED ya pasada cuenta como sesión dada aunque no se marque
+ *   COMPLETED.
  */
 router.get("/pending", async (_req, res, next) => {
   try {
+    const now = new Date();
+    const packs = await prisma.sessionPackage.findMany({
+      include: {
+        patient: { select: { id: true, fullName: true, email: true, phone: true } },
+        service: { select: { id: true, name: true } },
+        appointments: {
+          where: { status: { not: "CANCELED" } },
+          select: { status: true, scheduledAt: true },
+        },
+      },
+    });
+    const packages = packs
+      .map((p) => {
+        const used = p.appointments.length;
+        const hasUpcoming = p.appointments.some(
+          (a) =>
+            a.status === "PAYMENT_APPROVED" ||
+            a.status === "PENDING_CONFIRMATION" ||
+            (a.status === "SCHEDULED" && !!a.scheduledAt && a.scheduledAt >= now),
+        );
+        const dates = p.appointments
+          .map((a) => a.scheduledAt)
+          .filter((d): d is Date => !!d)
+          .sort((a, b) => a.getTime() - b.getTime());
+        return {
+          packageId: p.id,
+          patient: p.patient,
+          serviceId: p.service.id,
+          serviceName: p.service.name,
+          totalSessions: p.totalSessions,
+          usedSessions: used,
+          remaining: Math.max(0, p.totalSessions - used),
+          lastSessionAt: dates.length ? dates[dates.length - 1] : null,
+          hasUpcoming,
+        };
+      })
+      .filter((p) => p.remaining > 0 && !p.hasUpcoming)
+      // La que lleva más tiempo sin cita, primero.
+      .sort((a, b) => (a.lastSessionAt?.getTime() ?? 0) - (b.lastSessionAt?.getTime() ?? 0))
+      .map(({ hasUpcoming: _omit, ...p }) => {
+        void _omit;
+        return p;
+      });
+
     const appointments = await prisma.appointment.findMany({
       where: { status: { in: ["PAYMENT_APPROVED", "PENDING_CONFIRMATION"] } },
       orderBy: [{ scheduledAt: "asc" }, { updatedAt: "asc" }],
@@ -138,7 +186,7 @@ router.get("/pending", async (_req, res, next) => {
       },
     });
 
-    res.json({ appointments });
+    res.json({ appointments, packages });
   } catch (err) {
     next(err);
   }
