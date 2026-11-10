@@ -4,7 +4,7 @@ import { prisma } from "../../lib/prisma.js";
 import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin } from "../../middlewares/require-admin.js";
-import { pushEnabled, pushToAdmin } from "../../lib/push.js";
+import { isAllowedPushEndpoint, pushEnabled, pushToAdmin } from "../../lib/push.js";
 
 /**
  * Suscripciones push de la usuaria del panel (cualquier rol). El navegador
@@ -18,8 +18,14 @@ router.get("/public-key", (_req, res) => {
   res.json({ publicKey: pushEnabled() ? env.VAPID_PUBLIC_KEY : null });
 });
 
+const endpointField = z
+  .string()
+  .url()
+  .max(500)
+  .refine(isAllowedPushEndpoint, "El endpoint debe ser una URL https de un servicio push público.");
+
 const subscriptionSchema = z.object({
-  endpoint: z.string().url().max(500),
+  endpoint: endpointField,
   keys: z.object({
     p256dh: z.string().min(1).max(255),
     auth: z.string().min(1).max(255),
@@ -55,7 +61,7 @@ router.post("/subscribe", async (req, res, next) => {
   }
 });
 
-const endpointSchema = z.object({ endpoint: z.string().url().max(500) });
+const endpointSchema = z.object({ endpoint: endpointField });
 
 /** ¿Esta suscripción del navegador está registrada para la usuaria actual? */
 router.get("/subscribe", async (req, res, next) => {

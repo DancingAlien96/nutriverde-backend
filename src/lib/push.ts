@@ -44,6 +44,31 @@ function ensureConfigured(): boolean {
   return true;
 }
 
+/**
+ * Un endpoint push valido es una URL https de un servicio publico (FCM,
+ * Mozilla, Apple, Windows...). Se rechazan direcciones IP, localhost y
+ * nombres internos para que una cuenta del panel no pueda usar el servidor
+ * como puente hacia la red interna (SSRF). Se valida al suscribir y otra vez
+ * antes de enviar.
+ */
+export function isAllowedPushEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  if (url.username || url.password) return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+  // IPv4/IPv6 literales: los servicios push usan nombres de dominio.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith("[") || host.includes(":")) return false;
+  // Debe ser un nombre con al menos un punto (nada de hosts internos de una palabra).
+  if (!host.includes(".")) return false;
+  return true;
+}
+
 type SubscriptionRow = { id: string; endpoint: string; p256dh: string; auth: string; createdAt: Date };
 
 /** Una suscripcion recien creada puede dar 410 unos segundos mientras el servicio push la propaga: no se borra tan pronto. */
@@ -62,6 +87,10 @@ async function sendToSubscriptions(
 
   await Promise.all(
     subs.map(async (s) => {
+      if (!isAllowedPushEndpoint(s.endpoint)) {
+        dead.push(s.id);
+        return;
+      }
       try {
         await webpush.sendNotification(
           { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
