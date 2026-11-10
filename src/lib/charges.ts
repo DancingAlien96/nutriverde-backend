@@ -1,6 +1,7 @@
 import type { ChargeMethod, ChargePlan, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "./prisma.js";
+import { pushToRoles } from "./push.js";
 import { sendMail } from "./mailer.js";
 import { env } from "../config/env.js";
 
@@ -299,6 +300,16 @@ export async function notifyChargeActivity(opts: {
           console.error("Aviso de cobro falló:", err),
         ),
       ),
+    );
+    await pushToRoles(
+      ["NUTRITIONIST"],
+      {
+        title: `${actorName} ${what}`,
+        body: `${row.patient.fullName} · ${row.service.name} · ${chargeLine(charge)}`,
+        url: "/admin/citas?tab=cobrar",
+        tag: `charge-${row.id}`,
+      },
+      { excludeAdminId: opts.actor.sub },
     );
   } catch (err) {
     console.error("Aviso de cobro falló:", err);

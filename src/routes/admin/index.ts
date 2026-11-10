@@ -10,6 +10,7 @@ import appointmentsRouter from "./appointments.js";
 import usersRouter from "./users.js";
 import dashboardRouter from "./dashboard.js";
 import chargesRouter from "./charges.js";
+import pushRouter from "./push.js";
 import { requireFullAccess } from "../../middlewares/require-admin.js";
 
 const router = Router();
@@ -25,6 +26,9 @@ router.use("/appointments", appointmentsRouter);
 // secretaria cobra en recepción). Editar precio y borrar abonos se limita
 // dentro del router.
 router.use("/charges", chargesRouter);
+
+// Notificaciones push de la app instalada: cualquier rol.
+router.use("/push", pushRouter);
 
 // Todo lo demás es exclusivo de la nutricionista (y staff): pagos, datos
 // bancarios, disponibilidad, servicios, pacientes/expedientes y recordatorios.

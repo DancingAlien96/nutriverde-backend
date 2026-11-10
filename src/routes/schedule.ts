@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { pushToRoles, pushWhen } from "../lib/push.js";
 import { sendMail } from "../lib/mailer.js";
 import { HttpError } from "../middlewares/error-handler.js";
 import {
@@ -136,6 +137,12 @@ router.post("/:token/confirm", async (req, res, next) => {
 
     // Notificación a quien confirma citas: la nutricionista y, si existe,
     // la secretaria (que es quien agenda en el día a día).
+    void pushToRoles(["NUTRITIONIST", "SECRETARY"], {
+      title: "Horario propuesto",
+      body: `${appt.patient.fullName} propuso ${pushWhen(scheduledAt)} para ${appt.service.name}. Falta confirmar.`,
+      url: "/admin/citas?tab=agendar",
+      tag: `appt-${appt.id}`,
+    });
     const staff = await prisma.adminUser.findMany({
       where: { active: true, role: { in: ["NUTRITIONIST", "SECRETARY"] } },
       select: { email: true },

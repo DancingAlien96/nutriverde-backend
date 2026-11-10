@@ -27,8 +27,29 @@ model AdminUser {
 
   approvedPayments Payment[] @relation("PaymentApprover")
   reminders        Reminder[]
+  pushSubscriptions PushSubscription[]
 
   @@map("admin_users")
+}
+
+// ============================================================
+// Notificaciones push (Web Push) del panel: una suscripción por
+// navegador/dispositivo donde la usuaria las activó.
+// ============================================================
+model PushSubscription {
+  id          String    @id @default(cuid())
+  adminUserId String
+  endpoint    String    @unique @db.VarChar(500)
+  p256dh      String    @db.VarChar(255)
+  auth        String    @db.VarChar(255)
+  userAgent   String?   @db.VarChar(255)
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId])
+  @@map("push_subscriptions")
 }
 
 // ============================================================

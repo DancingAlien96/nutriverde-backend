@@ -62,6 +62,20 @@ const envSchema = z.object({
     .transform((v) => (v === "" ? undefined : v)),
   MAIL_FROM: z.string().default("Plenha Nutrition <no-reply@plenhanutrition.com>"),
 
+  // Notificaciones push del panel (Web Push). Se generan una vez con
+  // `npx web-push generate-vapid-keys`. Sin llaves, el panel no ofrece
+  // activar notificaciones y los avisos siguen solo por correo.
+  VAPID_PUBLIC_KEY: z
+    .string()
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+  VAPID_PRIVATE_KEY: z
+    .string()
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+  // Contacto que ven los servicios push (mailto: o https:).
+  VAPID_SUBJECT: z.string().default("mailto:citas@plenhanutrition.com"),
+
   // Meta del negocio
   BUSINESS_TIMEZONE: z.string().default("America/Guatemala"),
 });
@@ -81,6 +95,13 @@ if (!parsed.success) {
 if (parsed.data.MAIL_PROVIDER === "resend" && !parsed.data.RESEND_API_KEY) {
   console.error(
     "Invalid environment variables: MAIL_PROVIDER=resend requiere RESEND_API_KEY.",
+  );
+  process.exit(1);
+}
+
+if (!!parsed.data.VAPID_PUBLIC_KEY !== !!parsed.data.VAPID_PRIVATE_KEY) {
+  console.error(
+    "Invalid environment variables: VAPID_PUBLIC_KEY y VAPID_PRIVATE_KEY van juntas.",
   );
   process.exit(1);
 }

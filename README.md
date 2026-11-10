@@ -116,6 +116,7 @@ prisma/
 - **Payment** — comprobante subido manualmente, aprobación manual
 - **Appointment** — cita con link de Google Meet/Zoom (opcionalmente ligada a un paquete)
 - **SessionPackage** — programa de N citas pagado de una vez (servicio con `sessions` > 1). Nace al aprobar el pago; cada cita agendada descuenta una sesión y una cancelada la devuelve. La agenda avisa al agotarse.
+- **PushSubscription** — notificaciones push (Web Push + VAPID) de la app instalada del panel: una suscripción por navegador/dispositivo, ligada a la usuaria. Los avisos que ya salen por correo al personal (pago nuevo por revisar, horario propuesto por la paciente, último paquete agendado, y lo que hace la secretaria: citas, cobros, abonos, eliminaciones) llegan también como push. Requiere `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` (`npx web-push generate-vapid-keys`); sin ellas el panel no ofrece activarlas. Rutas en `/api/admin/push`.
 - **Charge / ChargePayment** — cobro de lo agendado desde el panel: precio acordado (editable al agendar; por defecto el de lista) de una cita suelta o de un paquete, y los abonos recibidos. El saldo y el estado (pagado / parcial / sin pagar) se calculan de los abonos. Cualquier rol registra cobros y abonos (`/api/admin/charges`); cambiar el precio ya acordado o borrar un abono es solo de nutricionista/staff. Los abonos cuentan como ingreso en el dashboard.
 - **AvailabilitySlot** / **AvailabilityBlock** — disponibilidad de la nutricionista
 - **NutritionPlan** — PDF del plan enviado tras la consulta

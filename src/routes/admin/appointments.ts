@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
+import { pushToRoles } from "../../lib/push.js";
 import { sendMail } from "../../lib/mailer.js";
 import { env } from "../../config/env.js";
 import { HttpError } from "../../middlewares/error-handler.js";
@@ -441,6 +442,12 @@ router.post("/", async (req, res, next) => {
         where: { packageId: pkg.id, status: { not: "CANCELED" } },
       });
       if (usedNow >= pkg.totalSessions) {
+        void pushToRoles(["NUTRITIONIST", "SECRETARY"], {
+          title: "Último paquete agendado",
+          body: `${patient.fullName} usó su última sesión de ${service.name}. Toca renovar.`,
+          url: "/admin/citas?tab=renovar",
+          tag: `package-${pkg.id}`,
+        });
         const staff = await prisma.adminUser.findMany({
           where: { active: true, role: { in: ["NUTRITIONIST", "SECRETARY"] } },
           select: { email: true },
@@ -1073,6 +1080,7 @@ router.delete("/:id", async (req, res, next) => {
     });
 
     void notifyAppointmentDeleted(req.admin!, {
+      patientId: appt.patientId,
       patientName: appt.patient.fullName,
       patientEmail: appt.patient.email,
       service: appt.service.name,
@@ -1093,6 +1101,7 @@ router.delete("/:id", async (req, res, next) => {
 async function notifyAppointmentDeleted(
   actor: { sub: string; email: string; role: string },
   info: {
+    patientId: string;
     patientName: string;
     patientEmail: string;
     service: string;
@@ -1136,6 +1145,15 @@ async function notifyAppointmentDeleted(
           html,
         }).catch((err) => console.error("Aviso de cita borrada falló:", err)),
       ),
+    );
+    await pushToRoles(
+      ["NUTRITIONIST"],
+      {
+        title: `${actorName} borró una cita cancelada`,
+        body: `${info.patientName} · ${info.service} · ${whenLabel}`,
+        url: `/admin/patients/${info.patientId}`,
+      },
+      { excludeAdminId: actor.sub },
     );
   } catch (err) {
     console.error("Aviso de cita borrada falló:", err);

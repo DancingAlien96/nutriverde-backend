@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { prisma } from "./prisma.js";
+import { pushToRoles, pushWhen } from "./push.js";
 import { sendMail } from "./mailer.js";
 import { isValidSlot } from "./scheduling.js";
 import { env } from "../config/env.js";
@@ -399,6 +400,17 @@ async function notifyNutritionistsUnsafe(opts: {
         (err) => console.error("Aviso a nutricionista falló:", err),
       ),
     ),
+  );
+
+  await pushToRoles(
+    ["NUTRITIONIST"],
+    {
+      title: `${actorName} ${ACTION_LABEL[opts.action]}`,
+      body: `${appt.patient.fullName} · ${appt.service.name} · ${pushWhen(appt.scheduledAt)}`,
+      url: "/admin/citas",
+      tag: `appt-${appt.id}`,
+    },
+    { excludeAdminId: opts.actor.sub },
   );
 }
 

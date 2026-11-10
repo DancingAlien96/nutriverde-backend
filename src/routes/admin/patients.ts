@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
+import { pushToRoles } from "../../lib/push.js";
 import { HttpError } from "../../middlewares/error-handler.js";
 import { requireAdmin, requireFullAccess, requireRole } from "../../middlewares/require-admin.js";
 import { packagesForPatient } from "../../lib/packages.js";
@@ -394,6 +395,15 @@ async function notifyPatientDeleted(
           html,
         }).catch((err) => console.error("Aviso de paciente eliminada falló:", err)),
       ),
+    );
+    await pushToRoles(
+      ["NUTRITIONIST"],
+      {
+        title: `${actorName} eliminó a una paciente`,
+        body: `${patient.fullName} (${patient.email}). No se puede deshacer.`,
+        url: "/admin/patients",
+      },
+      { excludeAdminId: actor.sub },
     );
   } catch (err) {
     console.error("Aviso de paciente eliminada falló:", err);

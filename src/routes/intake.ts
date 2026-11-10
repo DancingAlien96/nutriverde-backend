@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import fs from "node:fs/promises";
 import { prisma } from "../lib/prisma.js";
+import { pushToRoles } from "../lib/push.js";
 import { receiptUpload, toPublicUrl } from "../lib/upload.js";
 import { sendMail } from "../lib/mailer.js";
 import { env } from "../config/env.js";
@@ -240,6 +241,12 @@ router.post("/", receiptUpload.single("receipt"), async (req, res, next) => {
         }),
       }).catch((err) => console.error("Email admin falló:", err));
     }
+    void pushToRoles(["NUTRITIONIST"], {
+      title: "Nuevo pago por revisar",
+      body: `${parsed.fullName} · ${service.name}. Revisa el comprobante para aprobarlo.`,
+      url: "/admin/payments",
+      tag: `intake-${result.intake.id}`,
+    });
 
     res.status(201).json({
       ok: true,
