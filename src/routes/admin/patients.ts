@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../middlewares/error-handler.js";
-import { requireAdmin, requireRole } from "../../middlewares/require-admin.js";
+import { requireAdmin, requireFullAccess, requireRole } from "../../middlewares/require-admin.js";
 import { packagesForPatient } from "../../lib/packages.js";
 import { chargeInclude, summarizeCharge } from "../../lib/charges.js";
 import { buildExpedientePdf } from "../../lib/expediente-pdf.js";
@@ -232,11 +232,47 @@ router.get("/:id", async (req, res, next) => {
       balanceCents,
     };
 
+    // La secretaria recibe contacto, paquetes, citas (con su cobro),
+    // formularios y pagos: nada clínico, aunque el panel ya lo oculte.
+    if (req.admin!.role === "SECRETARY") {
+      res.json({
+        patient: {
+          ...patient,
+          ...SECRETARY_HIDDEN_FIELDS,
+          appointments: appointments.map((a) => ({ ...a, nutritionPlan: null })),
+          packages,
+          nutritionPlans: [],
+          diagnoses: [],
+          trainings: [],
+          measurements: [],
+          mealPlans: [],
+        },
+        stats,
+      });
+      return;
+    }
+
     res.json({ patient: { ...patient, appointments, packages }, stats });
   } catch (err) {
     next(err);
   }
 });
+
+/** Campos clínicos de la paciente que la secretaria no recibe. */
+const SECRETARY_HIDDEN_FIELDS = {
+  notes: null,
+  referralSource: null,
+  birthDate: null,
+  heightCm: null,
+  allergies: null,
+  medicalConditions: null,
+  medications: null,
+  alcoholNotes: null,
+  cravingsNotes: null,
+  waterCoffeeNotes: null,
+  dislikedFoods: null,
+  weekendSpots: null,
+} as const;
 
 /** Helper: trim + null si quedó vacío + valida UTF-8. Para campos opcionales de texto. */
 const nullableText = z
@@ -364,9 +400,21 @@ async function notifyPatientDeleted(
   }
 }
 
+/** Campos que la secretaria puede editar: solo contacto, nunca lo clínico. */
+const SECRETARY_EDITABLE = new Set(["fullName", "phone", "whatsappNotify", "timezone"]);
+
 router.put("/:id", async (req, res, next) => {
   try {
-    const patch = updateSchema.parse(req.body);
+    const parsed = updateSchema.parse(req.body);
+    const patch =
+      req.admin!.role === "SECRETARY"
+        ? (Object.fromEntries(
+            Object.entries(parsed).filter(([k]) => SECRETARY_EDITABLE.has(k)),
+          ) as typeof parsed)
+        : parsed;
+    if (req.admin!.role === "SECRETARY" && Object.keys(patch).length === 0) {
+      throw new HttpError(403, "Solo puedes editar nombre, teléfono, WhatsApp y zona horaria.");
+    }
     const existing = await prisma.patient.findUnique({
       where: { id: req.params.id },
     });
@@ -408,7 +456,7 @@ const diagnosisSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/diagnoses", async (req, res, next) => {
+router.post("/:id/diagnoses", requireFullAccess, async (req, res, next) => {
   try {
     const data = diagnosisSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -421,7 +469,7 @@ router.post("/:id/diagnoses", async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/diagnoses/:id", async (req, res, next) => {
+router.delete("/:patientId/diagnoses/:id", requireFullAccess, async (req, res, next) => {
   try {
     await prisma.patientDiagnosis.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -437,7 +485,7 @@ const trainingSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/trainings", async (req, res, next) => {
+router.post("/:id/trainings", requireFullAccess, async (req, res, next) => {
   try {
     const data = trainingSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -450,7 +498,7 @@ router.post("/:id/trainings", async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/trainings/:id", async (req, res, next) => {
+router.delete("/:patientId/trainings/:id", requireFullAccess, async (req, res, next) => {
   try {
     await prisma.patientTraining.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -480,7 +528,7 @@ const measurementSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/measurements", async (req, res, next) => {
+router.post("/:id/measurements", requireFullAccess, async (req, res, next) => {
   try {
     const data = measurementSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -497,7 +545,7 @@ router.post("/:id/measurements", async (req, res, next) => {
   }
 });
 
-router.put("/:patientId/measurements/:id", async (req, res, next) => {
+router.put("/:patientId/measurements/:id", requireFullAccess, async (req, res, next) => {
   try {
     const data = measurementSchema.parse(req.body);
     const measurement = await prisma.anthropometricMeasurement.update({
@@ -513,7 +561,7 @@ router.put("/:patientId/measurements/:id", async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/measurements/:id", async (req, res, next) => {
+router.delete("/:patientId/measurements/:id", requireFullAccess, async (req, res, next) => {
   try {
     await prisma.anthropometricMeasurement.delete({
       where: { id: req.params.id },
@@ -534,7 +582,7 @@ const mealPlanSchema = z.object({
   notes: nullableText,
 });
 
-router.post("/:id/meal-plans", async (req, res, next) => {
+router.post("/:id/meal-plans", requireFullAccess, async (req, res, next) => {
   try {
     const data = mealPlanSchema.parse(req.body);
     await assertPatientExists(req.params.id);
@@ -547,7 +595,7 @@ router.post("/:id/meal-plans", async (req, res, next) => {
   }
 });
 
-router.delete("/:patientId/meal-plans/:id", async (req, res, next) => {
+router.delete("/:patientId/meal-plans/:id", requireFullAccess, async (req, res, next) => {
   try {
     await prisma.mealPlan.delete({ where: { id: req.params.id } });
     res.status(204).end();
@@ -557,7 +605,7 @@ router.delete("/:patientId/meal-plans/:id", async (req, res, next) => {
 });
 
 // Envía el meal plan al correo registrado del paciente.
-router.post("/:patientId/meal-plans/:id/send", async (req, res, next) => {
+router.post("/:patientId/meal-plans/:id/send", requireFullAccess, async (req, res, next) => {
   try {
     const mealPlan = await prisma.mealPlan.findUnique({
       where: { id: req.params.id },
@@ -602,7 +650,7 @@ router.post("/:patientId/meal-plans/:id/send", async (req, res, next) => {
 // PDF del expediente
 // ============================================================
 
-router.get("/:id/expediente.pdf", async (req, res, next) => {
+router.get("/:id/expediente.pdf", requireFullAccess, async (req, res, next) => {
   try {
     const patient = await prisma.patient.findUnique({
       where: { id: req.params.id },

@@ -108,7 +108,7 @@ prisma/
 
 - **AdminUser** — usuarios del panel. Roles:
   - `NUTRITIONIST` / `STAFF` — acceso completo (pagos, pacientes, expedientes, disponibilidad, servicios).
-  - `SECRETARY` — agenda (citas, cobros y abonos), disponibilidad y la sección de pacientes completa: ve y edita el expediente clínico, descarga el PDF y puede eliminar pacientes (a la nutricionista le llega un aviso). No tiene Payments, Services, Users ni el dashboard (403), y no puede cambiar un precio ya acordado ni borrar abonos.
+  - `SECRETARY` — agenda (citas, cobros y abonos), disponibilidad y pacientes. Del expediente recibe solo contacto, paquetes, citas (con su cobro), formularios y pagos: la API le quita los datos clínicos, los planes y el PDF (403), y en `PUT` solo le acepta nombre, teléfono, WhatsApp y zona horaria. Puede eliminar pacientes y borrar citas canceladas (`DELETE /admin/appointments/:id`; a la nutricionista le llega un aviso). No tiene Payments, Services, Users ni el dashboard (403), y no puede cambiar un precio ya acordado ni borrar abonos.
   - Los usuarios se crean desde el panel, sección **Users** (solo la nutricionista): nombre, correo, contraseña, rol e idioma del panel (`locale`: EN o ES).
 - **Patient** — pacientes referidos
 - **Service** — Consulta Inicial (Q350), Seguimiento (Q250), Plan Premium (Q550)

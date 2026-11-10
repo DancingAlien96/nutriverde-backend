@@ -984,4 +984,114 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Borra una cita cancelada del expediente (limpieza del historial). Solo
+ * CANCELED: una cita vigente se cancela o reprograma, no se borra. Si tiene
+ * abonos registrados no se borra, porque es dinero recibido; primero habría
+ * que quitar los abonos (eso lo hace la nutricionista). El comprobante de la
+ * web, la medición o el plan ligados a la cita se conservan sueltos en la
+ * paciente. Si lo hace la secretaria, la nutricionista recibe un aviso.
+ */
+router.delete("/:id", async (req, res, next) => {
+  try {
+    const appt = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      include: {
+        patient: { select: { fullName: true, email: true } },
+        service: { select: { name: true } },
+        charge: { include: { payments: { select: { id: true } } } },
+      },
+    });
+    if (!appt) throw new HttpError(404, "Cita no encontrada.");
+    if (appt.status !== "CANCELED") {
+      throw new HttpError(409, "Solo se pueden borrar citas canceladas.");
+    }
+    if (appt.charge && appt.charge.payments.length > 0) {
+      throw new HttpError(
+        409,
+        "Esta cita tiene abonos registrados; quítalos antes de borrarla.",
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.payment.updateMany({ where: { appointmentId: appt.id }, data: { appointmentId: null } });
+      await tx.anthropometricMeasurement.updateMany({
+        where: { appointmentId: appt.id },
+        data: { appointmentId: null },
+      });
+      await tx.nutritionPlan.updateMany({ where: { appointmentId: appt.id }, data: { appointmentId: null } });
+      await tx.charge.deleteMany({ where: { appointmentId: appt.id } });
+      await tx.appointment.delete({ where: { id: appt.id } });
+    });
+
+    void notifyAppointmentDeleted(req.admin!, {
+      patientName: appt.patient.fullName,
+      patientEmail: appt.patient.email,
+      service: appt.service.name,
+      when: appt.scheduledAt,
+      timezone: appt.timezone,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Aviso a la nutricionista cuando otra persona borra una cita cancelada. Se
+ * llama con `void`: nunca debe escapar un rechazo sin manejar.
+ */
+async function notifyAppointmentDeleted(
+  actor: { sub: string; email: string; role: string },
+  info: {
+    patientName: string;
+    patientEmail: string;
+    service: string;
+    when: Date | null;
+    timezone: string;
+  },
+): Promise<void> {
+  if (actor.role === "NUTRITIONIST") return;
+  try {
+    const [who, recipients] = await Promise.all([
+      prisma.adminUser.findUnique({ where: { id: actor.sub }, select: { fullName: true } }),
+      prisma.adminUser.findMany({
+        where: { active: true, role: "NUTRITIONIST", id: { not: actor.sub } },
+        select: { email: true },
+      }),
+    ]);
+    const actorName = who?.fullName ?? actor.email;
+    const whenLabel = info.when
+      ? new Intl.DateTimeFormat("es-GT", {
+          dateStyle: "long",
+          timeStyle: "short",
+          timeZone: info.timezone,
+        }).format(info.when)
+      : "sin horario";
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+        <h2 style="color: #687445; font-size: 20px;">${escapeHtml(actorName)} borró una cita cancelada</h2>
+        <p><strong>Paciente:</strong> ${escapeHtml(info.patientName)} (${escapeHtml(info.patientEmail)})</p>
+        <p><strong>Servicio:</strong> ${escapeHtml(info.service)}</p>
+        <p><strong>Horario que tenía:</strong> ${escapeHtml(whenLabel)}</p>
+        <p>La cita ya estaba cancelada y se quitó del expediente. No se puede deshacer.</p>
+        <p style="color: #6b7280; font-size: 13px;">Aviso automático del panel de Plenha Nutrition.</p>
+      </div>
+    `;
+    await Promise.all(
+      recipients.map((r) =>
+        sendMail({
+          to: r.email,
+          subject: `${actorName} borró una cita cancelada de ${info.patientName}`,
+          template: "appointment-deleted-staff-notice",
+          html,
+        }).catch((err) => console.error("Aviso de cita borrada falló:", err)),
+      ),
+    );
+  } catch (err) {
+    console.error("Aviso de cita borrada falló:", err);
+  }
+}
+
 export default router;
