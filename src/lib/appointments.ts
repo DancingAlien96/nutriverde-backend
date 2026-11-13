@@ -320,7 +320,13 @@ export function appointmentRescheduledHtml(opts: {
 // o reprogramar. Si quien actúa es nutricionista no se avisa a sí misma.
 // ============================================================
 
-export type StaffAction = "created" | "confirmed" | "declined" | "canceled" | "rescheduled";
+export type StaffAction =
+  | "created"
+  | "confirmed"
+  | "declined"
+  | "canceled"
+  | "rescheduled"
+  | "converted";
 
 const ACTION_LABEL: Record<StaffAction, string> = {
   created: "agendó una cita nueva",
@@ -328,6 +334,7 @@ const ACTION_LABEL: Record<StaffAction, string> = {
   declined: "rechazó el horario de una cita",
   canceled: "canceló una cita",
   rescheduled: "reprogramó una cita",
+  converted: "convirtió una cita en programa",
 };
 
 export async function notifyNutritionists(opts: {

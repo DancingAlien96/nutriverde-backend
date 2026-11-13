@@ -23,12 +23,15 @@ import { getAvailableSlots, getMonthlyAvailability, isValidSlot } from "../../li
 import { packageInfoForAppointments, packagesForPatient } from "../../lib/packages.js";
 import {
   amountCentsSchema,
+  chargeInclude,
   chargeLine,
   chargeMethodSchema,
   chargePlanSchema,
   chargesForAppointments,
   createChargeTx,
+  fmtMoney,
   initialPaidCents,
+  summarizeCharge,
 } from "../../lib/charges.js";
 
 const router = Router();
@@ -544,6 +547,140 @@ router.get("/renewals", async (_req, res, next) => {
       .sort((a, b) => (b.lastSessionAt?.getTime() ?? 0) - (a.lastSessionAt?.getTime() ?? 0));
 
     res.json({ renewals });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const convertSchema = z.object({
+  serviceId: z.string().min(1),
+  priceCents: amountCentsSchema.optional(),
+  notes: z
+    .string()
+    .trim()
+    .max(500)
+    .refine(isUtf8, utf8Message("Las notas"))
+    .optional(),
+});
+
+/**
+ * Convierte una cita suelta (típicamente la consulta inicial) en la sesión 1
+ * de un programa que la paciente decide comprar ese día. Crea el paquete,
+ * liga la cita y arrastra el dinero: lo ya pagado por la cita (abonos del
+ * panel o comprobante web aprobado) queda como abono del programa, así que
+ * el saldo es el precio del programa menos lo pagado. La cita conserva su
+ * servicio original en el historial, pero cuenta como sesión del paquete.
+ */
+router.post("/:id/convert-to-package", async (req, res, next) => {
+  try {
+    const input = convertSchema.parse(req.body);
+    const appt = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      include: {
+        patient: { select: { id: true, fullName: true } },
+        charge: { include: chargeInclude },
+        payment: {
+          select: { id: true, status: true, amountCents: true, currency: true, approvedAt: true, createdAt: true },
+        },
+      },
+    });
+    if (!appt) throw new HttpError(404, "Cita no encontrada.");
+    if (appt.status === "CANCELED") {
+      throw new HttpError(409, "Una cita cancelada no se puede convertir en programa.");
+    }
+    if (appt.packageId) throw new HttpError(409, "Esta cita ya pertenece a un paquete.");
+
+    const service = await prisma.service.findUnique({ where: { id: input.serviceId } });
+    if (!service || !service.active || service.sessions < 2) {
+      throw new HttpError(400, "Elige un programa de varias sesiones.");
+    }
+    const priceCents = input.priceCents ?? service.priceCents;
+
+    // Dinero ya recibido por esta cita, que pasa al programa.
+    const panelPaid = appt.charge ? appt.charge.payments.reduce((sum, p) => sum + p.amountCents, 0) : 0;
+    const webPayment =
+      appt.payment && appt.payment.status === "APPROVED" && appt.payment.currency === service.currency
+        ? appt.payment
+        : null;
+    const carried = panelPaid + (webPayment?.amountCents ?? 0);
+    if (carried > priceCents) {
+      throw new HttpError(
+        400,
+        `El precio del programa no puede ser menor que lo ya pagado por la cita (${fmtMoney(carried, service.currency)}).`,
+      );
+    }
+
+    const actor = req.admin!.email;
+    const whenLabel = appt.scheduledAt
+      ? appt.scheduledAt.toLocaleDateString("es-GT", { timeZone: "America/Guatemala", day: "numeric", month: "short", year: "numeric" })
+      : "sin horario";
+    const result = await prisma.$transaction(async (tx) => {
+      const pkg = await tx.sessionPackage.create({
+        data: {
+          patientId: appt.patientId,
+          serviceId: service.id,
+          totalSessions: service.sessions,
+          notes:
+            `Programa vendido desde el panel por ${actor}; la cita del ${whenLabel} cuenta como sesión 1.` +
+            (input.notes ? `\n${input.notes}` : ""),
+        },
+      });
+      await tx.appointment.update({ where: { id: appt.id }, data: { packageId: pkg.id } });
+
+      const charge = await tx.charge.create({
+        data: {
+          patientId: appt.patientId,
+          serviceId: service.id,
+          packageId: pkg.id,
+          priceCents,
+          listPriceCents: service.priceCents,
+          currency: service.currency,
+          plan: carried >= priceCents ? "FULL" : "INSTALLMENTS",
+          notes: appt.charge?.notes ?? null,
+          createdByEmail: actor,
+          payments: webPayment
+            ? {
+                create: {
+                  amountCents: webPayment.amountCents,
+                  method: "TRANSFER",
+                  paidAt: webPayment.approvedAt ?? webPayment.createdAt,
+                  note: "Consulta inicial pagada por la web (comprobante aprobado).",
+                  recordedByEmail: actor,
+                },
+              }
+            : undefined,
+        },
+      });
+      // Los abonos de la cita pasan al programa y el cobro de la cita desaparece.
+      if (appt.charge) {
+        await tx.chargePayment.updateMany({
+          where: { chargeId: appt.charge.id },
+          data: { chargeId: charge.id },
+        });
+        await tx.charge.delete({ where: { id: appt.charge.id } });
+      }
+      const full = await tx.charge.findUniqueOrThrow({ where: { id: charge.id }, include: chargeInclude });
+      return { pkg, charge: summarizeCharge(full) };
+    });
+
+    void notifyNutritionists({
+      actor: req.admin!,
+      action: "converted",
+      appointmentId: appt.id,
+      chargeNote: `${service.name} (${service.sessions} sesiones) · ${chargeLine(result.charge)}`,
+    });
+
+    res.status(201).json({
+      ok: true,
+      package: {
+        id: result.pkg.id,
+        serviceName: service.name,
+        totalSessions: service.sessions,
+        usedSessions: 1,
+        remaining: service.sessions - 1,
+      },
+      charge: result.charge,
+    });
   } catch (err) {
     next(err);
   }
