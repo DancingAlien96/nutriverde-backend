@@ -595,6 +595,14 @@ router.post("/:id/convert-to-package", async (req, res, next) => {
       throw new HttpError(400, "Elige un programa de varias sesiones.");
     }
     const priceCents = input.priceCents ?? service.priceCents;
+    // El dinero de la cita solo se arrastra si esta en la misma moneda que el
+    // programa; mezclar monedas daria un saldo sin sentido.
+    if (appt.charge && appt.charge.currency !== service.currency) {
+      throw new HttpError(
+        409,
+        `El cobro de la cita esta en ${appt.charge.currency} y el programa en ${service.currency}; no se puede convertir.`,
+      );
+    }
 
     // Dinero ya recibido por esta cita, que pasa al programa.
     const panelPaid = appt.charge ? appt.charge.payments.reduce((sum, p) => sum + p.amountCents, 0) : 0;
