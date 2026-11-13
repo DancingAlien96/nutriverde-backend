@@ -555,6 +555,14 @@ router.get("/renewals", async (_req, res, next) => {
 const convertSchema = z.object({
   serviceId: z.string().min(1),
   priceCents: amountCentsSchema.optional(),
+  /** Pago que recepción recibe al convertir (completo, un abono, o nada todavía). */
+  payment: z
+    .object({
+      plan: chargePlanSchema,
+      paidCents: amountCentsSchema.optional(),
+      method: chargeMethodSchema.optional(),
+    })
+    .optional(),
   notes: z
     .string()
     .trim()
@@ -564,12 +572,13 @@ const convertSchema = z.object({
 });
 
 /**
- * Convierte una cita suelta (típicamente la consulta inicial) en la sesión 1
- * de un programa que la paciente decide comprar ese día. Crea el paquete,
- * liga la cita y arrastra el dinero: lo ya pagado por la cita (abonos del
- * panel o comprobante web aprobado) queda como abono del programa, así que
- * el saldo es el precio del programa menos lo pagado. La cita conserva su
- * servicio original en el historial, pero cuenta como sesión del paquete.
+ * Convierte una cita suelta (típicamente la consulta inicial, agendada sin
+ * pago) en la sesión 1 de un programa que la paciente decide comprar al salir
+ * de la consulta. Crea el paquete, liga la cita y registra el pago que
+ * recepción recibe en ese momento (completo, un abono o nada todavía). Si la
+ * cita ya tenía algo pagado (abonos del panel o comprobante web aprobado),
+ * eso también queda como abono del programa. La cita conserva su servicio
+ * original en el historial, pero cuenta como sesión del paquete.
  */
 router.post("/:id/convert-to-package", async (req, res, next) => {
   try {
@@ -617,6 +626,16 @@ router.post("/:id/convert-to-package", async (req, res, next) => {
         `El precio del programa no puede ser menor que lo ya pagado por la cita (${fmtMoney(carried, service.currency)}).`,
       );
     }
+    // Pago de hoy: "completo" es lo que falta después de lo ya pagado.
+    const todayPaid = !input.payment
+      ? 0
+      : input.payment.plan === "FULL"
+        ? priceCents - carried
+        : (input.payment.paidCents ?? 0);
+    if (carried + todayPaid > priceCents) {
+      throw new HttpError(400, "El abono de hoy no puede ser mayor que el saldo del programa.");
+    }
+    const totalPaid = carried + todayPaid;
 
     const actor = req.admin!.email;
     const whenLabel = appt.scheduledAt
@@ -643,20 +662,33 @@ router.post("/:id/convert-to-package", async (req, res, next) => {
           priceCents,
           listPriceCents: service.priceCents,
           currency: service.currency,
-          plan: carried >= priceCents ? "FULL" : "INSTALLMENTS",
+          plan: totalPaid >= priceCents ? "FULL" : "INSTALLMENTS",
           notes: appt.charge?.notes ?? null,
           createdByEmail: actor,
-          payments: webPayment
-            ? {
-                create: {
-                  amountCents: webPayment.amountCents,
-                  method: "TRANSFER",
-                  paidAt: webPayment.approvedAt ?? webPayment.createdAt,
-                  note: "Consulta inicial pagada por la web (comprobante aprobado).",
-                  recordedByEmail: actor,
-                },
-              }
-            : undefined,
+          payments: {
+            create: [
+              ...(webPayment
+                ? [
+                    {
+                      amountCents: webPayment.amountCents,
+                      method: "TRANSFER" as const,
+                      paidAt: webPayment.approvedAt ?? webPayment.createdAt,
+                      note: "Consulta inicial pagada por la web (comprobante aprobado).",
+                      recordedByEmail: actor,
+                    },
+                  ]
+                : []),
+              ...(todayPaid > 0
+                ? [
+                    {
+                      amountCents: todayPaid,
+                      method: input.payment?.method ?? ("CASH" as const),
+                      recordedByEmail: actor,
+                    },
+                  ]
+                : []),
+            ],
+          },
         },
       });
       // Los abonos de la cita pasan al programa y el cobro de la cita desaparece.
