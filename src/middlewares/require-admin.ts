@@ -22,7 +22,7 @@ declare global {
 
 export function signAdminToken(payload: AdminTokenPayload): string {
   return jwt.sign(payload, env.JWT_SECRET, {
-    expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"],
+    expiresIn: env.ADMIN_SESSION_IDLE as jwt.SignOptions["expiresIn"],
   });
 }
 

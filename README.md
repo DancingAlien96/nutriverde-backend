@@ -170,6 +170,8 @@ En prod **MySQL no se expone al host** — solo el backend en `${BACKEND_PORT:-4
 
 ## Notas
 
+- Sesión del panel: vence tras `ADMIN_SESSION_IDLE` sin usarlo (por defecto `3h`). Mientras la persona usa el panel, este renueva el token solo con `POST /api/admin/auth/refresh`; al vencer, el panel cierra la sesión y manda al login con aviso. `JWT_EXPIRES_IN` ya no se usa.
+
 - El servidor sirve `/uploads/*` estáticamente. En producción esto debe protegerse o moverse a un bucket (S3, R2).
 - Si `SMTP_USER`/`SMTP_PASS` no están definidos, los correos se "enviarán" a consola (jsonTransport) — útil para desarrollo.
 - Los precios se guardan en **centavos** (`priceCents`) para evitar problemas de coma flotante.

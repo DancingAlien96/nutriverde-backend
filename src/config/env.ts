@@ -34,7 +34,13 @@ const envSchema = z.object({
 
   // JWT para sesiones admin
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 chars"),
-  JWT_EXPIRES_IN: z.string().default("7d"),
+  // Ya no se usa: la sesion del panel la define ADMIN_SESSION_IDLE. Se deja
+  // aceptada para no romper despliegues que aun la declaren.
+  JWT_EXPIRES_IN: z.string().optional(),
+  // Tiempo sin usar el panel tras el cual la sesion vence (formato de
+  // jsonwebtoken: "3h", "90m", "30s"). Mientras la persona lo usa, el panel
+  // renueva el token solo (POST /admin/auth/refresh).
+  ADMIN_SESSION_IDLE: z.string().default("3h"),
 
   // Uploads
   UPLOAD_DIR: z.string().default("./uploads"),

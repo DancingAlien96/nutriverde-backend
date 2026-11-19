@@ -68,6 +68,17 @@ router.post("/login", loginLimiter, async (req, res, next) => {
   }
 });
 
+/**
+ * Renueva la sesion mientras la persona usa el panel: devuelve un token nuevo
+ * con el plazo completo (ADMIN_SESSION_IDLE). requireAdmin ya comprobo que el
+ * token actual es valido y que la cuenta sigue activa; si no lo usa durante
+ * ese plazo, el token vence y tiene que volver a entrar.
+ */
+router.post("/refresh", requireAdmin, (req, res) => {
+  const { sub, email, role } = req.admin!;
+  res.json({ token: signAdminToken({ sub, email, role }) });
+});
+
 router.get("/me", requireAdmin, async (req, res, next) => {
   try {
     const admin = await prisma.adminUser.findUnique({
